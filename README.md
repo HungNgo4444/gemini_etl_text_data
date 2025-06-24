@@ -108,9 +108,14 @@ Các template prompt có sẵn:
   4. extract_keywords: Hãy trích xuất từ khóa...
   5. translate: Hãy dịch nội dung sau...
   6. custom: Hãy xử lý nội dung theo yêu cầu
-  7. Tự nhập prompt
+  7. Đọc prompt từ file (.txt)
+  8. Tự nhập prompt
 
-Chọn template (1-7): 1
+Chọn template (1-8): 7
+Nhập đường dẫn file prompt (.txt): Prompt mẫu.txt
+✅ Đã đọc thành công file: Prompt mẫu.txt
+📝 Độ dài prompt: 6234 ký tự
+Prompt preview: Bạn là một hệ thống phân loại và trích xuất thông tin sản phẩm...
 ```
 
 #### Bước 7: Xác nhận và chạy
@@ -192,6 +197,24 @@ Output: "Khiếu nại"
 Input: "Dịch vụ khách hàng rất tệ, tôi rất thất vọng"
 Prompt: "Phân tích cảm xúc: Tích cực/Tiêu cực/Trung tính"
 Output: "Tiêu cực"
+```
+
+### 4. Sử dụng prompt từ file
+```
+# Tạo file prompt.txt với nội dung phức tạp
+Bạn là một hệ thống phân loại sản phẩm chuyên nghiệp.
+Hãy phân tích tin nhắn và trả về kết quả theo format:
+Category|Product|Service|Tag|Note
+
+Quy tắc phân loại:
+1. Category: Chỉ được chọn từ danh sách...
+2. Product: Tên sản phẩm cụ thể...
+3. Service: Loại dịch vụ...
+...
+
+# Chọn option "Đọc prompt từ file (.txt)" và nhập đường dẫn
+Input: "Tôi muốn mua ChocoPie vị đào"
+Output: "Bánh ChocoPie|ChocoPie Vị Đào|Sản phẩm|Hỏi/Thảo luận nhắc đến sản phẩm|2"
 ```
 
 ## 🛠️ Troubleshooting

@@ -4,6 +4,77 @@ from pathlib import Path
 from config import AVAILABLE_MODELS, DEFAULT_PROMPT_TEMPLATES
 from utils import validate_file_path, validate_prompt, detect_message_column, load_data
 
+def load_prompt_from_file():
+    """Load prompt từ file text"""
+    while True:
+        file_path = input("\nNhập đường dẫn file prompt (.txt): ").strip()
+        
+        # Loại bỏ dấu ngoặc kép nếu có
+        file_path = file_path.strip('"').strip("'")
+        
+        # Kiểm tra file tồn tại
+        if not os.path.exists(file_path):
+            print(f"❌ File không tồn tại: {file_path}")
+            retry = input("Thử lại? (y/n): ").strip().lower()
+            if retry not in ['y', 'yes', 'có']:
+                return None
+            continue
+        
+        # Kiểm tra phần mở rộng
+        if not file_path.lower().endswith('.txt'):
+            print(f"❌ Chỉ hỗ trợ file .txt")
+            retry = input("Thử lại? (y/n): ").strip().lower()
+            if retry not in ['y', 'yes', 'có']:
+                return None
+            continue
+        
+        try:
+            # Thử đọc file với các encoding khác nhau
+            encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
+            content = None
+            
+            for encoding in encodings:
+                try:
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        content = f.read().strip()
+                    break
+                except UnicodeDecodeError:
+                    continue
+            
+            if content is None:
+                print(f"❌ Không thể đọc file với các encoding thông dụng")
+                retry = input("Thử lại? (y/n): ").strip().lower()
+                if retry not in ['y', 'yes', 'có']:
+                    return None
+                continue
+            
+            if not content:
+                print(f"❌ File rỗng hoặc không có nội dung")
+                retry = input("Thử lại? (y/n): ").strip().lower()
+                if retry not in ['y', 'yes', 'có']:
+                    return None
+                continue
+            
+            # Validate prompt
+            is_valid, message = validate_prompt(content)
+            if not is_valid:
+                print(f"❌ {message}")
+                retry = input("Thử lại? (y/n): ").strip().lower()
+                if retry not in ['y', 'yes', 'có']:
+                    return None
+                continue
+            
+            print(f"✅ Đã đọc thành công file: {Path(file_path).name}")
+            print(f"📝 Độ dài prompt: {len(content)} ký tự")
+            
+            return content
+            
+        except Exception as e:
+            print(f"❌ Lỗi khi đọc file: {str(e)}")
+            retry = input("Thử lại? (y/n): ").strip().lower()
+            if retry not in ['y', 'yes', 'có']:
+                return None
+
 def get_user_input():
     """Thu thập thông tin từ người dùng"""
     print("🚀 AI ETL DATA - Xử lý dữ liệu text với Gemini AI")
@@ -142,11 +213,12 @@ def get_user_input():
     for i, key in enumerate(template_keys, 1):
         print(f"  {i}. {key}: {DEFAULT_PROMPT_TEMPLATES[key]}")
     
-    print(f"  {len(template_keys) + 1}. Tự nhập prompt")
+    print(f"  {len(template_keys) + 1}. Đọc prompt từ file (.txt)")
+    print(f"  {len(template_keys) + 2}. Tự nhập prompt")
     
     while True:
         try:
-            choice = input(f"\nChọn template (1-{len(template_keys) + 1}): ").strip()
+            choice = input(f"\nChọn template (1-{len(template_keys) + 2}): ").strip()
             
             if choice.isdigit():
                 template_index = int(choice) - 1
@@ -158,6 +230,16 @@ def get_user_input():
                     print(f"Prompt: {user_config['prompt']}")
                     break
                 elif template_index == len(template_keys):
+                    # Đọc prompt từ file
+                    prompt_from_file = load_prompt_from_file()
+                    if prompt_from_file:
+                        user_config['prompt'] = prompt_from_file
+                        print(f"✅ Đã load prompt từ file")
+                        print(f"Prompt preview: {prompt_from_file[:200]}...")
+                        break
+                    else:
+                        print("❌ Không thể load prompt từ file, vui lòng chọn lại")
+                elif template_index == len(template_keys) + 1:
                     # Tự nhập prompt
                     while True:
                         custom_prompt = input("\nNhập prompt tùy chỉnh: ").strip()
@@ -170,7 +252,7 @@ def get_user_input():
                             print(f"❌ {message}")
                     break
                 else:
-                    print(f"❌ Vui lòng chọn từ 1 đến {len(template_keys) + 1}")
+                    print(f"❌ Vui lòng chọn từ 1 đến {len(template_keys) + 2}")
             else:
                 print("❌ Vui lòng nhập số hợp lệ!")
         except ValueError:
@@ -219,7 +301,7 @@ Công cụ xử lý dữ liệu text bằng AI Gemini, hỗ trợ đa dạng cá
 ✅ Kết nối Gemini API với nhiều model
 ✅ Tự động phát hiện cột dữ liệu
 ✅ Checkpoint để tiếp tục khi bị dừng
-✅ Prompt templates có sẵn
+✅ Prompt templates có sẵn + đọc từ file .txt
 ✅ Báo cáo tiến trình real-time
 ✅ Xử lý lỗi thông minh
 ✅ Xuất kết quả cùng thư mục
@@ -231,7 +313,7 @@ Công cụ xử lý dữ liệu text bằng AI Gemini, hỗ trợ đa dạng cá
 4. Chọn file dữ liệu (.xlsx/.csv)
 5. Chọn cột cần xử lý
 6. Cấu hình checkpoint
-7. Chọn/nhập prompt
+7. Chọn/nhập prompt (template có sẵn, file .txt, hoặc tự nhập)
 8. Xác nhận và bắt đầu
 
 📊 KẾT QUẢ:
