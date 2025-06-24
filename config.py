@@ -42,8 +42,8 @@ USER_PROMPT = ""
 # BATCH PROCESSING CONFIGURATION
 # ===========================
 ENABLE_BATCH_PROCESSING = True  # Bật/tắt batch processing
-BATCH_SIZE = 5  # Số records xử lý cùng lúc trong 1 batch
-MAX_BATCH_SIZE = 10  # Giới hạn tối đa batch size
+BATCH_SIZE = 20  # Số records xử lý cùng lúc trong 1 batch
+MAX_BATCH_SIZE = 100  # Giới hạn tối đa batch size
 MIN_BATCH_SIZE = 1   # Giới hạn tối thiểu batch size
 
 # ===========================
