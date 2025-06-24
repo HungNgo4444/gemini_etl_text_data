@@ -39,6 +39,14 @@ PROGRESS_REPORT_INTERVAL = 100  # Báo cáo tiến trình mỗi 100 records
 USER_PROMPT = ""
 
 # ===========================
+# BATCH PROCESSING CONFIGURATION
+# ===========================
+ENABLE_BATCH_PROCESSING = True  # Bật/tắt batch processing
+BATCH_SIZE = 5  # Số records xử lý cùng lúc trong 1 batch
+MAX_BATCH_SIZE = 10  # Giới hạn tối đa batch size
+MIN_BATCH_SIZE = 1   # Giới hạn tối thiểu batch size
+
+# ===========================
 # MODEL PARAMETERS
 # ===========================
 MAX_OUTPUT_TOKENS = 1024

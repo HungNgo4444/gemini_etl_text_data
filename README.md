@@ -17,6 +17,7 @@ Tạo ra một công cụ ETL (Extract, Transform, Load) linh hoạt sử dụng
 - ✅ User tự nhập API Key và chọn model
 - ✅ Xử lý lỗi và retry thông minh
 - ✅ Rate limiting tự động
+- ⚡ **Batch Processing**: Xử lý 5-10 records/API call (tăng tốc 5-10x)
 
 ### 📁 Xử lý file đa dạng
 - ✅ Hỗ trợ Excel (.xlsx, .xls) và CSV
@@ -38,10 +39,11 @@ Tạo ra một công cụ ETL (Extract, Transform, Load) linh hoạt sử dụng
 - ✅ Tự động định nghĩa cột cho multi-column
 
 ### 📊 Monitoring & Reporting
-- ✅ Progress bar real-time
+- ✅ Progress bar real-time (batch-aware)
 - ✅ Báo cáo tiến trình định kỳ
-- ✅ Ước tính thời gian hoàn thành
+- ✅ Ước tính thời gian hoàn thành (với batch optimization)
 - ✅ Thống kê lỗi và thành công
+- ✅ Automatic fallback khi batch processing thất bại
 
 ## 🚀 Cài đặt và sử dụng
 
@@ -187,6 +189,12 @@ REQUEST_DELAY = 2.0              # Delay giữa requests (giây)
 # Retry
 MAX_RETRIES = 3          # Số lần thử lại
 RETRY_DELAY = 60         # Thời gian chờ retry (giây)
+
+# Batch Processing
+ENABLE_BATCH_PROCESSING = True  # Bật/tắt batch processing
+BATCH_SIZE = 5                  # Số records xử lý cùng lúc
+MAX_BATCH_SIZE = 10             # Giới hạn tối đa batch size
+MIN_BATCH_SIZE = 1              # Giới hạn tối thiểu batch size
 ```
 
 ### Custom prompt templates
@@ -262,6 +270,39 @@ DỮ LIỆU CẦN XỬ LÝ:
 
 # Kết quả tích hợp thông tin từ cả 3 cột
 Output: "Sentiment: Tích cực | Chủ đề: Review | Tóm tắt: Khách hàng đánh giá cao sản phẩm | Ghi chú: Nguyễn A review ChocoPie"
+```
+
+### 6. Batch Processing (Tối ưu tốc độ)
+```
+🚀 BẮT ĐẦU XỬ LÝ DỮ LIỆU
+🎯 Sẽ xử lý 50 records  
+⚡ Chế độ: Batch Processing
+📦 Batch size: 5 records/batch
+🔢 Số batch ước tính: 10
+⏱️ Ước tính thời gian: ~0.1 giờ (cải thiện 5-10x)
+
+# AI nhận được batch prompt:
+HƯỚNG DẪN BATCH PROCESSING:
+- Xử lý 5 mục dữ liệu dưới đây
+- Trả về kết quả theo thứ tự tương ứng
+- Format: [1] Kết quả 1\n[2] Kết quả 2\n[3] Kết quả 3...
+
+DỮ LIỆU CẦN XỬ LÝ:
+[1] Sản phẩm tuyệt vời!
+[2] Giao hàng chậm
+[3] Chất lượng ổn
+[4] Rất hài lòng
+[5] Bình thường
+
+# AI trả về:
+[1] Tích cực | Hài lòng
+[2] Tiêu cực | Giao hàng  
+[3] Trung tính | Chất lượng
+[4] Tích cực | Hài lòng
+[5] Trung tính | Bình thường
+
+→ 1 API call xử lý 5 records thay vì 5 API calls
+→ Giảm 80% thời gian xử lý
 ```
 
 ## 🛠️ Troubleshooting

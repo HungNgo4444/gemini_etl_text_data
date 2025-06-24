@@ -11,6 +11,8 @@ from utils import (
     save_checkpoint,
     process_text_with_ai,
     process_multicolumn_with_ai,
+    process_batch_with_ai,
+    process_multicolumn_batch_with_ai,
     generate_output_filename,
     generate_checkpoint_filename,
     clean_text,
@@ -22,7 +24,9 @@ from utils import (
 from config import (
     AI_RESULT_COLUMN,
     CHECKPOINT_INTERVAL,
-    PROGRESS_REPORT_INTERVAL
+    PROGRESS_REPORT_INTERVAL,
+    ENABLE_BATCH_PROCESSING,
+    BATCH_SIZE
 )
 
 class AIDataProcessor:
@@ -112,121 +116,35 @@ class AIDataProcessor:
         return True
     
     def process_data(self):
-        """Xử lý dữ liệu chính"""
+        """Xử lý dữ liệu chính với Batch Processing"""
         print(f"\n🚀 BẮT ĐẦU XỬ LÝ DỮ LIỆU")
         print("="*50)
         
         stats = get_processing_stats(self.df, AI_RESULT_COLUMN)
         self.stats['start_time'] = time.time()
         
+        # Xác định chế độ xử lý
+        is_batch_mode = ENABLE_BATCH_PROCESSING and stats['remaining'] > 1
+        batch_size = BATCH_SIZE if is_batch_mode else 1
+        
         print(f"🎯 Sẽ xử lý {stats['remaining']} records")
+        print(f"⚡ Chế độ: {'Batch Processing' if is_batch_mode else 'Single Processing'}")
+        if is_batch_mode:
+            print(f"📦 Batch size: {batch_size} records/batch")
+            estimated_batches = (stats['remaining'] + batch_size - 1) // batch_size
+            print(f"🔢 Số batch ước tính: {estimated_batches}")
+            print(f"⏱️ Ước tính thời gian: ~{estimated_batches * 5 / 3600:.1f} giờ (cải thiện 5-10x)")
+        else:
+            print(f"⏱️ Ước tính thời gian: ~{stats['remaining'] * 3 / 3600:.1f} giờ")
         print(f"✍️ Prompt: {self.config['prompt'][:100]}...")
-        print(f"⏱️ Ước tính thời gian: ~{stats['remaining'] * 3 / 3600:.1f} giờ")
         print("-" * 50)
         
         try:
-            # Tạo progress bar
-            progress_bar = tqdm(
-                self.df.index, 
-                desc="Xử lý dữ liệu", 
-                ncols=100,
-                initial=stats['processed']
-            )
-            
-            for idx in progress_bar:
-                # Bỏ qua nếu đã xử lý
-                if (pd.notna(self.df.at[idx, AI_RESULT_COLUMN]) and 
-                    self.df.at[idx, AI_RESULT_COLUMN] != ""):
-                    continue
+            if is_batch_mode:
+                return self._process_with_batch()
+            else:
+                return self._process_without_batch()
                 
-                try:
-                    # Xử lý theo chế độ
-                    if self.config.get('multi_column_mode', False):
-                        # Chế độ nhiều cột
-                        # Kiểm tra có dữ liệu trong ít nhất 1 cột không
-                        has_data = False
-                        row_data = {}
-                        
-                        for col in self.config['selected_columns']:
-                            value = self.df.at[idx, col]
-                            row_data[col] = value
-                            if pd.notna(value) and str(value).strip():
-                                has_data = True
-                        
-                        if not has_data:
-                            self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
-                            continue
-                        
-                        # Xử lý với AI multi-column
-                        result = process_multicolumn_with_ai(
-                            self.model,
-                            row_data,
-                            self.config['selected_columns'],
-                            self.config['prompt']
-                        )
-                    else:
-                        # Chế độ cột đơn
-                        # Bỏ qua nếu không có dữ liệu
-                        if pd.isna(self.df.at[idx, self.config['message_column']]):
-                            continue
-                        
-                        # Lấy và làm sạch text
-                        text = clean_text(self.df.at[idx, self.config['message_column']])
-                        
-                        if not text:
-                            self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
-                            continue
-                        
-                        # Xử lý với AI
-                        result = process_text_with_ai(
-                            self.model, 
-                            text, 
-                            self.config['prompt']
-                        )
-                    
-                    # Lưu kết quả
-                    self.df.at[idx, AI_RESULT_COLUMN] = result
-                    self.stats['processed'] += 1
-                    
-                    # Cập nhật progress bar
-                    progress_bar.set_description(f"Đã xử lý: {self.stats['processed']}")
-                    
-                except Exception as e:
-                    self.stats['errors'] += 1
-                    self.df.at[idx, AI_RESULT_COLUMN] = f"Lỗi xử lý: {str(e)}"
-                    logger.error(f"Lỗi tại row {idx}: {str(e)}")
-                
-                # Lưu checkpoint định kỳ
-                if (self.config['use_checkpoint'] and 
-                    self.checkpoint_file and
-                    self.stats['processed'] % CHECKPOINT_INTERVAL == 0 and 
-                    self.stats['processed'] > 0):
-                    
-                    save_checkpoint(self.df, self.checkpoint_file)
-                
-                # Báo cáo tiến trình định kỳ
-                if (self.stats['processed'] % PROGRESS_REPORT_INTERVAL == 0 and 
-                    self.stats['processed'] > 0):
-                    
-                    print_progress_summary(
-                        self.stats['processed'], 
-                        stats['total'], 
-                        self.stats['start_time'], 
-                        self.stats['errors']
-                    )
-            
-            progress_bar.close()
-            
-            # Báo cáo cuối cùng
-            print_progress_summary(
-                self.stats['processed'], 
-                stats['total'], 
-                self.stats['start_time'], 
-                self.stats['errors']
-            )
-            
-            return True
-            
         except KeyboardInterrupt:
             print("\n⏹️ Người dùng dừng chương trình...")
             if self.config['use_checkpoint'] and self.checkpoint_file:
@@ -241,6 +159,276 @@ class AIDataProcessor:
                 save_checkpoint(self.df, self.checkpoint_file)
                 print("💾 Đã lưu checkpoint. Chạy lại để tiếp tục.")
             return False
+
+    def _process_with_batch(self):
+        """Xử lý dữ liệu với batch processing"""
+        # Lấy danh sách các record cần xử lý
+        unprocessed_indices = []
+        for idx in self.df.index:
+            if (pd.isna(self.df.at[idx, AI_RESULT_COLUMN]) or 
+                self.df.at[idx, AI_RESULT_COLUMN] == ""):
+                unprocessed_indices.append(idx)
+        
+        total_batches = (len(unprocessed_indices) + BATCH_SIZE - 1) // BATCH_SIZE
+        
+        # Tạo progress bar cho batches
+        progress_bar = tqdm(
+            range(total_batches),
+            desc="Xử lý batches",
+            ncols=100
+        )
+        
+        for batch_idx in progress_bar:
+            start_idx = batch_idx * BATCH_SIZE
+            end_idx = min(start_idx + BATCH_SIZE, len(unprocessed_indices))
+            batch_indices = unprocessed_indices[start_idx:end_idx]
+            
+            try:
+                if self.config.get('multi_column_mode', False):
+                    # Batch processing cho multi-column
+                    batch_rows = []
+                    valid_indices = []
+                    
+                    for idx in batch_indices:
+                        row_data = {}
+                        has_data = False
+                        
+                        for col in self.config['selected_columns']:
+                            value = self.df.at[idx, col]
+                            row_data[col] = value
+                            if pd.notna(value) and str(value).strip():
+                                has_data = True
+                        
+                        if has_data:
+                            batch_rows.append(row_data)
+                            valid_indices.append(idx)
+                        else:
+                            self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                    
+                    if batch_rows:
+                        # Xử lý batch multi-column
+                        results = process_multicolumn_batch_with_ai(
+                            self.model,
+                            batch_rows,
+                            self.config['selected_columns'],
+                            self.config['prompt']
+                        )
+                        
+                        # Lưu kết quả
+                        for i, result in enumerate(results):
+                            if i < len(valid_indices):
+                                self.df.at[valid_indices[i], AI_RESULT_COLUMN] = result
+                                self.stats['processed'] += 1
+                
+                else:
+                    # Batch processing cho single column
+                    batch_data = []
+                    valid_indices = []
+                    
+                    for idx in batch_indices:
+                        if pd.notna(self.df.at[idx, self.config['message_column']]):
+                            text = clean_text(self.df.at[idx, self.config['message_column']])
+                            if text:
+                                batch_data.append(text)
+                                valid_indices.append(idx)
+                            else:
+                                self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                        else:
+                            self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                    
+                    if batch_data:
+                        # Xử lý batch single column
+                        results = process_batch_with_ai(
+                            self.model,
+                            batch_data,
+                            self.config['prompt']
+                        )
+                        
+                        # Lưu kết quả
+                        for i, result in enumerate(results):
+                            if i < len(valid_indices):
+                                self.df.at[valid_indices[i], AI_RESULT_COLUMN] = result
+                                self.stats['processed'] += 1
+                
+                # Cập nhật progress bar
+                progress_bar.set_description(f"Đã xử lý: {self.stats['processed']} records")
+                
+                # Lưu checkpoint định kỳ
+                if (self.config['use_checkpoint'] and 
+                    self.checkpoint_file and
+                    (batch_idx + 1) % (CHECKPOINT_INTERVAL // BATCH_SIZE) == 0):
+                    
+                    save_checkpoint(self.df, self.checkpoint_file)
+                
+                # Báo cáo tiến trình định kỳ
+                if (batch_idx + 1) % (PROGRESS_REPORT_INTERVAL // BATCH_SIZE) == 0:
+                    print_progress_summary(
+                        self.stats['processed'], 
+                        len(self.df), 
+                        self.stats['start_time'], 
+                        self.stats['errors']
+                    )
+                
+            except Exception as e:
+                logger.error(f"❌ Lỗi xử lý batch {batch_idx + 1}: {str(e)}")
+                # Fallback: xử lý từng record trong batch này
+                for idx in batch_indices:
+                    try:
+                        if self.config.get('multi_column_mode', False):
+                            row_data = {}
+                            has_data = False
+                            for col in self.config['selected_columns']:
+                                value = self.df.at[idx, col]
+                                row_data[col] = value
+                                if pd.notna(value) and str(value).strip():
+                                    has_data = True
+                            
+                            if has_data:
+                                result = process_multicolumn_with_ai(
+                                    self.model,
+                                    row_data,
+                                    self.config['selected_columns'],
+                                    self.config['prompt']
+                                )
+                                self.df.at[idx, AI_RESULT_COLUMN] = result
+                                self.stats['processed'] += 1
+                            else:
+                                self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                        else:
+                            if pd.notna(self.df.at[idx, self.config['message_column']]):
+                                text = clean_text(self.df.at[idx, self.config['message_column']])
+                                if text:
+                                    result = process_text_with_ai(
+                                        self.model, 
+                                        text, 
+                                        self.config['prompt']
+                                    )
+                                    self.df.at[idx, AI_RESULT_COLUMN] = result
+                                    self.stats['processed'] += 1
+                                else:
+                                    self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                            else:
+                                self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                    except Exception as single_error:
+                        self.stats['errors'] += 1
+                        self.df.at[idx, AI_RESULT_COLUMN] = f"Lỗi xử lý: {str(single_error)}"
+                        logger.error(f"Lỗi tại row {idx}: {str(single_error)}")
+        
+        progress_bar.close()
+        
+        # Báo cáo cuối cùng
+        print_progress_summary(
+            self.stats['processed'], 
+            len(self.df), 
+            self.stats['start_time'], 
+            self.stats['errors']
+        )
+        
+        return True
+
+    def _process_without_batch(self):
+        """Xử lý dữ liệu không dùng batch processing (legacy mode)"""
+        stats = get_processing_stats(self.df, AI_RESULT_COLUMN)
+        
+        # Tạo progress bar
+        progress_bar = tqdm(
+            self.df.index, 
+            desc="Xử lý dữ liệu", 
+            ncols=100,
+            initial=stats['processed']
+        )
+        
+        for idx in progress_bar:
+            # Bỏ qua nếu đã xử lý
+            if (pd.notna(self.df.at[idx, AI_RESULT_COLUMN]) and 
+                self.df.at[idx, AI_RESULT_COLUMN] != ""):
+                continue
+            
+            try:
+                # Xử lý theo chế độ
+                if self.config.get('multi_column_mode', False):
+                    # Chế độ nhiều cột
+                    row_data = {}
+                    has_data = False
+                    
+                    for col in self.config['selected_columns']:
+                        value = self.df.at[idx, col]
+                        row_data[col] = value
+                        if pd.notna(value) and str(value).strip():
+                            has_data = True
+                    
+                    if not has_data:
+                        self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                        continue
+                    
+                    # Xử lý với AI multi-column
+                    result = process_multicolumn_with_ai(
+                        self.model,
+                        row_data,
+                        self.config['selected_columns'],
+                        self.config['prompt']
+                    )
+                else:
+                    # Chế độ cột đơn
+                    if pd.isna(self.df.at[idx, self.config['message_column']]):
+                        continue
+                    
+                    # Lấy và làm sạch text
+                    text = clean_text(self.df.at[idx, self.config['message_column']])
+                    
+                    if not text:
+                        self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                        continue
+                    
+                    # Xử lý với AI
+                    result = process_text_with_ai(
+                        self.model, 
+                        text, 
+                        self.config['prompt']
+                    )
+                
+                # Lưu kết quả
+                self.df.at[idx, AI_RESULT_COLUMN] = result
+                self.stats['processed'] += 1
+                
+                # Cập nhật progress bar
+                progress_bar.set_description(f"Đã xử lý: {self.stats['processed']}")
+                
+            except Exception as e:
+                self.stats['errors'] += 1
+                self.df.at[idx, AI_RESULT_COLUMN] = f"Lỗi xử lý: {str(e)}"
+                logger.error(f"Lỗi tại row {idx}: {str(e)}")
+            
+            # Lưu checkpoint định kỳ
+            if (self.config['use_checkpoint'] and 
+                self.checkpoint_file and
+                self.stats['processed'] % CHECKPOINT_INTERVAL == 0 and 
+                self.stats['processed'] > 0):
+                
+                save_checkpoint(self.df, self.checkpoint_file)
+            
+            # Báo cáo tiến trình định kỳ
+            if (self.stats['processed'] % PROGRESS_REPORT_INTERVAL == 0 and 
+                self.stats['processed'] > 0):
+                
+                print_progress_summary(
+                    self.stats['processed'], 
+                    stats['total'], 
+                    self.stats['start_time'], 
+                    self.stats['errors']
+                )
+        
+        progress_bar.close()
+        
+        # Báo cáo cuối cùng
+        print_progress_summary(
+            self.stats['processed'], 
+            stats['total'], 
+            self.stats['start_time'], 
+            self.stats['errors']
+        )
+        
+        return True
     
     def save_results(self):
         """Lưu kết quả cuối cùng"""

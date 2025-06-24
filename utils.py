@@ -19,7 +19,9 @@ from config import (
     REQUEST_DELAY,
     SUPPORTED_FORMATS,
     LOG_FILE,
-    LOG_LEVEL
+    LOG_LEVEL,
+    BATCH_SIZE,
+    ENABLE_BATCH_PROCESSING
 )
 
 def setup_logging():
@@ -247,6 +249,223 @@ Kết quả:"""
 def _get_column_description(column_name):
     """Tạo mô tả cho cột dựa trên tên cột"""
     return column_name
+
+def process_batch_with_ai(model, batch_data, prompt, max_retries=MAX_RETRIES):
+    """Xử lý batch data với AI model - single column mode"""
+    try:
+        # Tạo prompt cho batch processing
+        batch_items = []
+        for i, item in enumerate(batch_data, 1):
+            cleaned_text = clean_text(str(item))
+            batch_items.append(f"[{i}] {cleaned_text}")
+        
+        batch_content = "\n\n".join(batch_items)
+        
+        # Tạo prompt đầy đủ cho batch
+        full_prompt = f"""{prompt}
+
+HƯỚNG DẪN BATCH PROCESSING:
+- Xử lý {len(batch_data)} mục dữ liệu dưới đây
+- Trả về kết quả theo thứ tự tương ứng
+- Format: [1] Kết quả 1\n[2] Kết quả 2\n[3] Kết quả 3...
+
+DỮ LIỆU CẦN XỬ LÝ:
+{batch_content}
+
+KẾT QUẢ:"""
+
+        # Gọi AI
+        for attempt in range(max_retries):
+            try:
+                response = model.generate_content(full_prompt)
+                
+                # Delay để tránh rate limit  
+                time.sleep(REQUEST_DELAY)
+                
+                if response and response.text:
+                    # Parse kết quả batch
+                    results = parse_batch_results(response.text.strip(), len(batch_data))
+                    logger.debug(f"✅ Xử lý batch thành công: {len(results)} results")
+                    return results
+                else:
+                    raise Exception("Không nhận được response từ AI")
+                    
+            except Exception as e:
+                error_msg = str(e)
+                
+                # Xử lý lỗi rate limit
+                if "429" in error_msg or "quota" in error_msg.lower():
+                    if attempt < max_retries - 1:
+                        wait_time = RETRY_DELAY * (attempt + 1)
+                        logger.warning(f"⏳ Rate limit reached. Chờ {wait_time} giây...")
+                        time.sleep(wait_time)
+                        continue
+                
+                # Xử lý lỗi khác
+                logger.error(f"❌ Lỗi xử lý batch (attempt {attempt + 1}): {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                    continue
+        
+        # Nếu batch thất bại, fallback về single processing
+        logger.warning("⚠️ Batch processing thất bại, fallback về single processing")
+        results = []
+        for item in batch_data:
+            result = process_text_with_ai(model, str(item), prompt, max_retries)
+            results.append(result)
+        return results
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi xử lý batch: {str(e)}")
+        # Fallback về single processing
+        results = []
+        for item in batch_data:
+            result = process_text_with_ai(model, str(item), prompt, max_retries)
+            results.append(result)
+        return results
+
+def process_multicolumn_batch_with_ai(model, batch_rows, column_names, prompt, max_retries=MAX_RETRIES):
+    """Xử lý batch data với AI model - multi-column mode"""
+    try:
+        # Tạo prompt cho multi-column batch processing
+        batch_items = []
+        
+        # Tạo phần định nghĩa cột
+        column_definitions = "\n".join([
+            f"- Cột {i+1} ({col_name}): {_get_column_description(col_name)}"
+            for i, col_name in enumerate(column_names)
+        ])
+        
+        # Tạo dữ liệu batch
+        for i, row_data in enumerate(batch_rows, 1):
+            data_structure = "\n".join([
+                f"  {j+1}. {col_name}: {clean_text(str(row_data.get(col_name, 'N/A')))}"
+                for j, col_name in enumerate(column_names)
+            ])
+            batch_items.append(f"[{i}]\n{data_structure}")
+        
+        batch_content = "\n\n".join(batch_items)
+        
+        # Tạo prompt đầy đủ cho multi-column batch
+        full_prompt = f"""{prompt}
+
+THÔNG TIN CÁC CỘT:
+{column_definitions}
+
+HƯỚNG DẪN BATCH PROCESSING:
+- Xử lý {len(batch_rows)} mục dữ liệu dưới đây
+- Mỗi mục có {len(column_names)} cột thông tin
+- Trả về kết quả theo thứ tự tương ứng
+- Format: [1] Kết quả 1\n[2] Kết quả 2\n[3] Kết quả 3...
+
+DỮ LIỆU CẦN XỬ LÝ:
+{batch_content}
+
+KẾT QUẢ:"""
+
+        # Gọi AI
+        for attempt in range(max_retries):
+            try:
+                response = model.generate_content(full_prompt)
+                
+                # Delay để tránh rate limit
+                time.sleep(REQUEST_DELAY)
+                
+                if response and response.text:
+                    # Parse kết quả batch
+                    results = parse_batch_results(response.text.strip(), len(batch_rows))
+                    logger.debug(f"✅ Xử lý multi-column batch thành công: {len(results)} results")
+                    return results
+                else:
+                    raise Exception("Không nhận được response từ AI")
+                    
+            except Exception as e:
+                error_msg = str(e)
+                
+                # Xử lý lỗi rate limit
+                if "429" in error_msg or "quota" in error_msg.lower():
+                    if attempt < max_retries - 1:
+                        wait_time = RETRY_DELAY * (attempt + 1)
+                        logger.warning(f"⏳ Rate limit reached. Chờ {wait_time} giây...")
+                        time.sleep(wait_time)
+                        continue
+                
+                # Xử lý lỗi khác
+                logger.error(f"❌ Lỗi xử lý multi-column batch (attempt {attempt + 1}): {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                    continue
+        
+        # Nếu batch thất bại, fallback về single processing
+        logger.warning("⚠️ Multi-column batch processing thất bại, fallback về single processing")
+        results = []
+        for row_data in batch_rows:
+            result = process_multicolumn_with_ai(model, row_data, column_names, prompt, max_retries)
+            results.append(result)
+        return results
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi xử lý multi-column batch: {str(e)}")
+        # Fallback về single processing
+        results = []
+        for row_data in batch_rows:
+            result = process_multicolumn_with_ai(model, row_data, column_names, prompt, max_retries)
+            results.append(result)
+        return results
+
+def parse_batch_results(response_text, expected_count):
+    """Parse kết quả từ batch response"""
+    try:
+        results = []
+        lines = response_text.split('\n')
+        
+        current_result = ""
+        current_index = 0
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Kiểm tra nếu là dòng bắt đầu với [số]
+            if line.startswith('[') and ']' in line:
+                # Lưu kết quả trước đó nếu có
+                if current_result and current_index > 0:
+                    results.append(current_result.strip())
+                
+                # Bắt đầu kết quả mới
+                bracket_end = line.find(']')
+                try:
+                    index = int(line[1:bracket_end])
+                    current_index = index
+                    current_result = line[bracket_end + 1:].strip()
+                except ValueError:
+                    # Nếu không parse được số, coi như là nội dung
+                    current_result += " " + line
+            else:
+                # Tiếp tục nội dung của kết quả hiện tại
+                current_result += " " + line
+        
+        # Lưu kết quả cuối cùng
+        if current_result and current_index > 0:
+            results.append(current_result.strip())
+        
+        # Đảm bảo số lượng kết quả đúng
+        while len(results) < expected_count:
+            results.append("Lỗi parse kết quả")
+        
+        # Cắt bớt nếu có quá nhiều kết quả
+        results = results[:expected_count]
+        
+        logger.debug(f"✅ Parse batch results: {len(results)}/{expected_count}")
+        return results
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi parse batch results: {str(e)}")
+        # Fallback: trả về response nguyên cho tất cả
+        return [response_text] * expected_count
 
 def estimate_completion_time(processed, total, start_time):
     """Ước tính thời gian hoàn thành"""
