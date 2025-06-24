@@ -7,6 +7,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import google.generativeai as genai
 from tqdm import tqdm
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
+import traceback
 
 # Import config
 from config import (
@@ -21,7 +25,14 @@ from config import (
     LOG_FILE,
     LOG_LEVEL,
     BATCH_SIZE,
-    ENABLE_BATCH_PROCESSING
+    ENABLE_BATCH_PROCESSING,
+    ENABLE_PARALLEL_PROCESSING,
+    MAX_CONCURRENT_THREADS,
+    THREAD_BATCH_SIZE,
+    RATE_LIMIT_DELAY,
+    MAX_RETRIES_PER_THREAD,
+    THREAD_TIMEOUT,
+    CIRCUIT_BREAKER_THRESHOLD
 )
 
 def setup_logging():
@@ -466,6 +477,224 @@ def parse_batch_results(response_text, expected_count):
         logger.error(f"❌ Lỗi parse batch results: {str(e)}")
         # Fallback: trả về response nguyên cho tất cả
         return [response_text] * expected_count
+
+# ===========================
+# PARALLEL PROCESSING FUNCTIONS
+# ===========================
+
+class CircuitBreaker:
+    """Circuit breaker pattern cho parallel processing"""
+    def __init__(self, threshold=CIRCUIT_BREAKER_THRESHOLD):
+        self.threshold = threshold
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = 'CLOSED'  # CLOSED, OPEN, HALF_OPEN
+        self.reset_timeout = 60  # seconds
+        self._lock = threading.Lock()
+    
+    def call(self, func, *args, **kwargs):
+        """Gọi function với circuit breaker protection"""
+        with self._lock:
+            if self.state == 'OPEN':
+                if time.time() - self.last_failure_time > self.reset_timeout:
+                    self.state = 'HALF_OPEN'
+                else:
+                    raise Exception("Circuit breaker is OPEN")
+            
+            try:
+                result = func(*args, **kwargs)
+                if self.state == 'HALF_OPEN':
+                    self.state = 'CLOSED'
+                    self.failure_count = 0
+                return result
+            
+            except Exception as e:
+                self.failure_count += 1
+                self.last_failure_time = time.time()
+                
+                if self.failure_count >= self.threshold:
+                    self.state = 'OPEN'
+                    logger.warning(f"🔴 Circuit breaker OPEN - {self.failure_count} failures")
+                
+                raise e
+
+def process_parallel_batch_worker(thread_id, model, batch_data, column_names, prompt, is_multicolumn, circuit_breaker, progress_queue):
+    """Worker function cho parallel processing"""
+    try:
+        logger.info(f"🚀 Thread {thread_id} bắt đầu xử lý {len(batch_data)} items")
+        
+        # Delay staggered để tránh rate limit
+        time.sleep(thread_id * RATE_LIMIT_DELAY)
+        
+        # Xử lý với circuit breaker protection
+        if is_multicolumn:
+            results = circuit_breaker.call(
+                process_multicolumn_batch_with_ai,
+                model, batch_data, column_names, prompt, MAX_RETRIES_PER_THREAD
+            )
+        else:
+            results = circuit_breaker.call(
+                process_batch_with_ai,
+                model, batch_data, prompt, MAX_RETRIES_PER_THREAD
+            )
+        
+        # Report progress
+        progress_queue.put(('success', thread_id, len(batch_data)))
+        logger.info(f"✅ Thread {thread_id} hoàn thành thành công")
+        
+        return results
+        
+    except Exception as e:
+        error_msg = f"Thread {thread_id} lỗi: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        logger.debug(traceback.format_exc())
+        
+        # Report error
+        progress_queue.put(('error', thread_id, str(e)))
+        
+        # Fallback về single processing cho batch này
+        results = []
+        try:
+            if is_multicolumn:
+                for row_data in batch_data:
+                    result = process_multicolumn_with_ai(model, row_data, column_names, prompt, MAX_RETRIES_PER_THREAD)
+                    results.append(result)
+            else:
+                for item in batch_data:
+                    result = process_text_with_ai(model, str(item), prompt, MAX_RETRIES_PER_THREAD)
+                    results.append(result)
+        except Exception as fallback_error:
+            logger.error(f"❌ Thread {thread_id} fallback cũng thất bại: {str(fallback_error)}")
+            results = [f"Lỗi xử lý: {str(e)}"] * len(batch_data)
+        
+        return results
+
+def process_data_parallel(model, data, column_names, prompt, is_multicolumn=False):
+    """Xử lý dữ liệu với parallel processing"""
+    if not ENABLE_PARALLEL_PROCESSING:
+        logger.info("🔄 Parallel processing bị tắt, chuyển về batch processing")
+        return process_data_batch_only(model, data, column_names, prompt, is_multicolumn)
+    
+    try:
+        total_items = len(data)
+        logger.info(f"🚀 Bắt đầu parallel processing: {total_items} items với {MAX_CONCURRENT_THREADS} threads")
+        
+        # Chia dữ liệu thành các batches cho các threads
+        thread_batches = []
+        batch_size = THREAD_BATCH_SIZE
+        
+        for i in range(0, total_items, batch_size):
+            batch = data[i:i+batch_size]
+            thread_batches.append(batch)
+        
+        logger.info(f"📦 Đã chia thành {len(thread_batches)} batches, mỗi batch {batch_size} items")
+        
+        # Setup circuit breaker và progress tracking
+        circuit_breaker = CircuitBreaker()
+        progress_queue = Queue()
+        all_results = [None] * len(thread_batches)
+        
+        # Progress tracking
+        completed_threads = 0
+        total_processed = 0
+        start_time = time.time()
+        
+        # Chạy parallel processing với ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_THREADS) as executor:
+            # Submit all tasks
+            future_to_index = {}
+            for i, batch in enumerate(thread_batches):
+                future = executor.submit(
+                    process_parallel_batch_worker,
+                    i, model, batch, column_names, prompt, is_multicolumn, circuit_breaker, progress_queue
+                )
+                future_to_index[future] = i
+            
+            # Collect results với progress tracking
+            with tqdm(total=total_items, desc="🔄 Parallel Processing") as pbar:
+                for future in as_completed(future_to_index, timeout=THREAD_TIMEOUT):
+                    try:
+                        index = future_to_index[future]
+                        results = future.result()
+                        all_results[index] = results
+                        
+                        # Update progress
+                        batch_size_actual = len(thread_batches[index])
+                        total_processed += batch_size_actual
+                        completed_threads += 1
+                        pbar.update(batch_size_actual)
+                        
+                        # Progress report
+                        elapsed = time.time() - start_time
+                        rate = total_processed / elapsed if elapsed > 0 else 0
+                        logger.info(f"📈 Thread {index} hoàn thành - Tổng: {total_processed}/{total_items} ({rate:.2f} items/s)")
+                        
+                    except Exception as e:
+                        index = future_to_index[future]
+                        logger.error(f"❌ Thread {index} timeout hoặc lỗi: {str(e)}")
+                        # Tạo kết quả lỗi cho batch này
+                        batch_size_error = len(thread_batches[index])
+                        all_results[index] = [f"Lỗi timeout: {str(e)}"] * batch_size_error
+        
+        # Flatten results
+        final_results = []
+        for batch_results in all_results:
+            if batch_results:
+                final_results.extend(batch_results)
+        
+        # Validation
+        if len(final_results) != total_items:
+            logger.warning(f"⚠️ Số lượng kết quả không khớp: {len(final_results)} vs {total_items}")
+            # Pad with error messages if needed
+            while len(final_results) < total_items:
+                final_results.append("Lỗi: thiếu kết quả")
+        
+        # Final summary
+        elapsed = time.time() - start_time
+        rate = total_processed / elapsed if elapsed > 0 else 0
+        logger.info(f"🎉 Parallel processing hoàn thành: {total_processed}/{total_items} trong {elapsed:.1f}s ({rate:.2f} items/s)")
+        
+        return final_results
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi parallel processing: {str(e)}")
+        logger.info("🔄 Fallback về batch processing")
+        return process_data_batch_only(model, data, column_names, prompt, is_multicolumn)
+
+def process_data_batch_only(model, data, column_names, prompt, is_multicolumn=False):
+    """Xử lý dữ liệu chỉ với batch processing (không parallel)"""
+    try:
+        total_items = len(data)
+        batch_size = BATCH_SIZE
+        all_results = []
+        
+        logger.info(f"📦 Batch processing: {total_items} items với batch size {batch_size}")
+        
+        with tqdm(total=total_items, desc="🔄 Batch Processing") as pbar:
+            for i in range(0, total_items, batch_size):
+                batch = data[i:i+batch_size]
+                
+                if is_multicolumn:
+                    results = process_multicolumn_batch_with_ai(model, batch, column_names, prompt)
+                else:
+                    results = process_batch_with_ai(model, batch, prompt)
+                
+                all_results.extend(results)
+                pbar.update(len(batch))
+        
+        return all_results
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi batch processing: {str(e)}")
+        # Fallback về single processing
+        results = []
+        for item in data:
+            if is_multicolumn:
+                result = process_multicolumn_with_ai(model, item, column_names, prompt)
+            else:
+                result = process_text_with_ai(model, str(item), prompt)
+            results.append(result)
+        return results
 
 def estimate_completion_time(processed, total, start_time):
     """Ước tính thời gian hoàn thành"""

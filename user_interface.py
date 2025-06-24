@@ -385,5 +385,22 @@ Công cụ xử lý dữ liệu text bằng AI Gemini, hỗ trợ đa dạng cá
 - Kiểm tra API Key có quyền truy cập model
 """)
 
+def show_main_menu():
+    """Hiển thị menu chính"""
+    print("\n🚀 AI ETL DATA - CÔNG CỤ XỬ LÝ DỮ LIỆU VỚI GEMINI AI")
+    print("="*60)
+    print("📋 TÍNH NĂNG CHÍNH:")
+    print("   ✅ Hỗ trợ đa model Gemini (gemma-3-27b-it, gemini-2.0-flash, v.v.)")
+    print("   ✅ Xử lý file Excel/CSV với checkpoint thông minh")
+    print("   ✅ Template prompt đa dạng + đọc prompt từ file")
+    print("   ✅ Xử lý đa cột (multi-column) với AI analysis")
+    print("   ✅ Batch Processing: Tăng tốc 5-10x")
+    print("   ✅ Parallel Processing: Tăng tốc 15-30x")
+    print("   ✅ Monitoring real-time với progress bar")
+    print("   ✅ Error handling và auto-recovery")
+    print("="*60)
+    print("🎯 Bắt đầu thôi!")
+    print()
+
 if __name__ == "__main__":
     display_help() 

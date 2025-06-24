@@ -47,6 +47,17 @@ MAX_BATCH_SIZE = 100  # Giới hạn tối đa batch size
 MIN_BATCH_SIZE = 1   # Giới hạn tối thiểu batch size
 
 # ===========================
+# PARALLEL PROCESSING CONFIGURATION
+# ===========================
+ENABLE_PARALLEL_PROCESSING = True  # Bật/tắt parallel processing
+MAX_CONCURRENT_THREADS = 2         # Số threads chạy song song (conservative)
+THREAD_BATCH_SIZE = 5              # Số records mỗi thread xử lý trong 1 batch
+RATE_LIMIT_DELAY = 2.0             # Delay giữa các requests (seconds)
+MAX_RETRIES_PER_THREAD = 3         # Số lần retry cho mỗi thread
+THREAD_TIMEOUT = 300               # Timeout cho mỗi thread (seconds)
+CIRCUIT_BREAKER_THRESHOLD = 5      # Số lỗi liên tiếp để kích hoạt circuit breaker
+
+# ===========================
 # MODEL PARAMETERS
 # ===========================
 MAX_OUTPUT_TOKENS = 1024

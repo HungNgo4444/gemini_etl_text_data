@@ -1,4 +1,9 @@
-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+AI ETL Data - Công cụ xử lý dữ liệu text với Gemini AI
+Hỗ trợ Batch Processing và Parallel Processing cho tốc độ tối ưu
+"""
 
 import sys
 import os
@@ -7,45 +12,40 @@ from pathlib import Path
 # Thêm thư mục hiện tại vào Python path
 sys.path.append(str(Path(__file__).parent))
 
-from user_interface import get_user_input, display_help
+from user_interface import collect_user_input, show_main_menu
 from processor import run_processor
 
 def main():
-    """Hàm main chính của chương trình"""
-    
-    
-    # Kiểm tra arguments
-    if len(sys.argv) > 1:
-        if sys.argv[1] in ['-h', '--help', 'help']:
-            display_help()
-            return
-        elif sys.argv[1] in ['-v', '--version', 'version']:
-            print("AI ETL DATA v1.0.0")
-            return
-    
+    """Hàm chính của chương trình"""
     try:
-        # Thu thập thông tin từ người dùng
-        config = get_user_input()
+        # Hiển thị menu chính
+        show_main_menu()
         
-        if config is None:
-            print("❌ Đã hủy thao tác")
-            return
+        # Thu thập thông tin từ user
+        config = collect_user_input()
+        
+        if not config:
+            print("❌ Không thể thu thập thông tin cấu hình!")
+            return False
         
         # Chạy processor
         success = run_processor(config)
         
         if success:
-            print("\n🎊 CHÚC MỪNG! Xử lý dữ liệu hoàn tất thành công!")
-            print("🔍 Kiểm tra file kết quả trong cùng thư mục với file input.")
+            print("\n🎉 Hoàn thành thành công!")
+            print("📧 Liên hệ: AI ETL Data Team")
+            print("🔗 GitHub: https://github.com/HungNgo4444/gemini_etl_text_data")
         else:
-            print("\n😞 Xử lý dữ liệu không hoàn tất!")
-            print("💡 Kiểm tra log file để biết chi tiết lỗi.")
+            print("\n❌ Quá trình xử lý gặp lỗi!")
             
+        return success
+        
     except KeyboardInterrupt:
-        print("\n\n⏹️ Chương trình bị dừng bởi người dùng")
+        print("\n⏹️ Người dùng dừng chương trình.")
+        return False
     except Exception as e:
         print(f"\n💥 Lỗi không mong muốn: {str(e)}")
-        print("💡 Vui lòng kiểm tra lại thông tin đầu vào và thử lại")
+        return False
 
 def check_dependencies():
     """Kiểm tra các dependencies cần thiết"""

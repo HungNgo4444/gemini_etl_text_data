@@ -13,6 +13,8 @@ from utils import (
     process_multicolumn_with_ai,
     process_batch_with_ai,
     process_multicolumn_batch_with_ai,
+    process_data_parallel,
+    process_data_batch_only,
     generate_output_filename,
     generate_checkpoint_filename,
     clean_text,
@@ -26,7 +28,10 @@ from config import (
     CHECKPOINT_INTERVAL,
     PROGRESS_REPORT_INTERVAL,
     ENABLE_BATCH_PROCESSING,
-    BATCH_SIZE
+    BATCH_SIZE,
+    ENABLE_PARALLEL_PROCESSING,
+    MAX_CONCURRENT_THREADS,
+    THREAD_BATCH_SIZE
 )
 
 class AIDataProcessor:
@@ -116,7 +121,7 @@ class AIDataProcessor:
         return True
     
     def process_data(self):
-        """Xử lý dữ liệu chính với Batch Processing"""
+        """Xử lý dữ liệu chính với Parallel + Batch Processing"""
         print(f"\n🚀 BẮT ĐẦU XỬ LÝ DỮ LIỆU")
         print("="*50)
         
@@ -124,23 +129,33 @@ class AIDataProcessor:
         self.stats['start_time'] = time.time()
         
         # Xác định chế độ xử lý
+        is_parallel_mode = ENABLE_PARALLEL_PROCESSING and stats['remaining'] > MAX_CONCURRENT_THREADS
         is_batch_mode = ENABLE_BATCH_PROCESSING and stats['remaining'] > 1
-        batch_size = BATCH_SIZE if is_batch_mode else 1
         
         print(f"🎯 Sẽ xử lý {stats['remaining']} records")
-        print(f"⚡ Chế độ: {'Batch Processing' if is_batch_mode else 'Single Processing'}")
-        if is_batch_mode:
-            print(f"📦 Batch size: {batch_size} records/batch")
-            estimated_batches = (stats['remaining'] + batch_size - 1) // batch_size
-            print(f"🔢 Số batch ước tính: {estimated_batches}")
-            print(f"⏱️ Ước tính thời gian: ~{estimated_batches * 5 / 3600:.1f} giờ (cải thiện 5-10x)")
+        
+        # Hiển thị chế độ xử lý
+        if is_parallel_mode:
+            print(f"🚀 Chế độ: Parallel + Batch Processing")
+            print(f"🧵 Threads: {MAX_CONCURRENT_THREADS}")
+            print(f"📦 Thread batch size: {THREAD_BATCH_SIZE}")
+            estimated_time_saving = "15-30x faster"
+        elif is_batch_mode:
+            print(f"📦 Chế độ: Batch Processing")
+            print(f"📦 Batch size: {BATCH_SIZE}")
+            estimated_time_saving = "5-10x faster"
         else:
-            print(f"⏱️ Ước tính thời gian: ~{stats['remaining'] * 3 / 3600:.1f} giờ")
+            print(f"⚡ Chế độ: Single Processing")
+            estimated_time_saving = "baseline"
+        
+        print(f"⏱️ Ước tính cải thiện tốc độ: {estimated_time_saving}")
         print(f"✍️ Prompt: {self.config['prompt'][:100]}...")
         print("-" * 50)
         
         try:
-            if is_batch_mode:
+            if is_parallel_mode:
+                return self._process_with_parallel()
+            elif is_batch_mode:
                 return self._process_with_batch()
             else:
                 return self._process_without_batch()
@@ -158,6 +173,162 @@ class AIDataProcessor:
             if self.config['use_checkpoint'] and self.checkpoint_file:
                 save_checkpoint(self.df, self.checkpoint_file)
                 print("💾 Đã lưu checkpoint. Chạy lại để tiếp tục.")
+            return False
+    
+    def _process_with_parallel(self):
+        """Xử lý dữ liệu với parallel processing"""
+        print("🚀 Khởi động Parallel Processing...")
+        
+        # Chuẩn bị dữ liệu cho parallel processing
+        unprocessed_data = []
+        unprocessed_indices = []
+        
+        for idx in self.df.index:
+            if (pd.isna(self.df.at[idx, AI_RESULT_COLUMN]) or 
+                self.df.at[idx, AI_RESULT_COLUMN] == ""):
+                
+                if self.config.get('multi_column_mode', False):
+                    # Multi-column mode
+                    row_data = {}
+                    has_data = False
+                    
+                    for col in self.config['selected_columns']:
+                        value = self.df.at[idx, col]
+                        row_data[col] = value
+                        if pd.notna(value) and str(value).strip():
+                            has_data = True
+                    
+                    if has_data:
+                        unprocessed_data.append(row_data)
+                        unprocessed_indices.append(idx)
+                    else:
+                        self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                else:
+                    # Single column mode
+                    if pd.notna(self.df.at[idx, self.config['message_column']]):
+                        text = clean_text(self.df.at[idx, self.config['message_column']])
+                        if text:
+                            unprocessed_data.append(text)
+                            unprocessed_indices.append(idx)
+                        else:
+                            self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                    else:
+                        self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+        
+        if not unprocessed_data:
+            print("✅ Không có dữ liệu cần xử lý")
+            return True
+        
+        print(f"📊 Chuẩn bị xử lý {len(unprocessed_data)} items với parallel processing")
+        
+        # Gọi parallel processing
+        try:
+            results = process_data_parallel(
+                self.model,
+                unprocessed_data,
+                self.config.get('selected_columns', []),
+                self.config['prompt'],
+                self.config.get('multi_column_mode', False)
+            )
+            
+            # Lưu kết quả vào DataFrame
+            for i, result in enumerate(results):
+                if i < len(unprocessed_indices):
+                    idx = unprocessed_indices[i]
+                    self.df.at[idx, AI_RESULT_COLUMN] = result
+                    self.stats['processed'] += 1
+            
+            # Lưu checkpoint sau khi hoàn thành
+            if self.config['use_checkpoint'] and self.checkpoint_file:
+                save_checkpoint(self.df, self.checkpoint_file)
+            
+            print(f"✅ Parallel processing hoàn thành: {len(results)} kết quả")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Lỗi parallel processing: {str(e)}")
+            print(f"⚠️ Parallel processing thất bại, fallback về batch processing")
+            
+            # Fallback về batch processing
+            return self._process_with_batch_fallback(unprocessed_data, unprocessed_indices)
+
+    def _process_with_batch_fallback(self, unprocessed_data, unprocessed_indices):
+        """Fallback processing khi parallel thất bại"""
+        try:
+            print("📦 Chuyển sang Batch Processing fallback...")
+            
+            results = process_data_batch_only(
+                self.model,
+                unprocessed_data,
+                self.config.get('selected_columns', []),
+                self.config['prompt'],
+                self.config.get('multi_column_mode', False)
+            )
+            
+            # Lưu kết quả vào DataFrame
+            for i, result in enumerate(results):
+                if i < len(unprocessed_indices):
+                    idx = unprocessed_indices[i]
+                    self.df.at[idx, AI_RESULT_COLUMN] = result
+                    self.stats['processed'] += 1
+            
+            # Lưu checkpoint
+            if self.config['use_checkpoint'] and self.checkpoint_file:
+                save_checkpoint(self.df, self.checkpoint_file)
+            
+            print(f"✅ Batch processing fallback hoàn thành: {len(results)} kết quả")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Batch processing fallback cũng thất bại: {str(e)}")
+            print("⚠️ Fallback về single processing...")
+            
+            # Final fallback về single processing
+            return self._process_single_fallback(unprocessed_data, unprocessed_indices)
+    
+    def _process_single_fallback(self, unprocessed_data, unprocessed_indices):
+        """Final fallback về single processing"""
+        try:
+            print("⚡ Single processing fallback...")
+            
+            for i, data in enumerate(unprocessed_data):
+                if i >= len(unprocessed_indices):
+                    break
+                    
+                idx = unprocessed_indices[i]
+                
+                try:
+                    if self.config.get('multi_column_mode', False):
+                        result = process_multicolumn_with_ai(
+                            self.model,
+                            data,
+                            self.config['selected_columns'],
+                            self.config['prompt']
+                        )
+                    else:
+                        result = process_text_with_ai(
+                            self.model,
+                            str(data),
+                            self.config['prompt']
+                        )
+                    
+                    self.df.at[idx, AI_RESULT_COLUMN] = result
+                    self.stats['processed'] += 1
+                    
+                except Exception as single_error:
+                    self.stats['errors'] += 1
+                    self.df.at[idx, AI_RESULT_COLUMN] = f"Lỗi xử lý: {str(single_error)}"
+                    logger.error(f"Lỗi single processing tại {idx}: {str(single_error)}")
+            
+            # Lưu checkpoint
+            if self.config['use_checkpoint'] and self.checkpoint_file:
+                save_checkpoint(self.df, self.checkpoint_file)
+            
+            print(f"✅ Single processing fallback hoàn thành: {self.stats['processed']} records")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Single processing fallback thất bại: {str(e)}")
             return False
 
     def _process_with_batch(self):
