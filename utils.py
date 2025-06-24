@@ -210,6 +210,44 @@ def process_text_with_ai(model, text, prompt, max_retries=MAX_RETRIES):
     
     return f"Lỗi xử lý sau {max_retries} lần thử"
 
+def process_multicolumn_with_ai(model, row_data, column_names, prompt, max_retries=MAX_RETRIES):
+    """Xử lý nhiều cột với AI model"""
+    try:
+        # Tạo cấu trúc dữ liệu cho prompt
+        data_structure = "\n".join([
+            f"{i+1}. {col_name}: {clean_text(str(row_data.get(col_name, 'N/A')))}"
+            for i, col_name in enumerate(column_names)
+        ])
+        
+        # Tạo phần định nghĩa cột cho prompt
+        column_definitions = "\n".join([
+            f"- Cột {i+1} ({col_name}): {_get_column_description(col_name)}"
+            for i, col_name in enumerate(column_names)
+        ])
+        
+        # Tạo prompt đầy đủ với định nghĩa cột
+        full_prompt = f"""
+{prompt}
+
+THÔNG TIN CÁC CỘT:
+{column_definitions}
+
+DỮ LIỆU CẦN XỬ LÝ:
+{data_structure}
+
+Kết quả:"""
+        
+        # Gọi hàm xử lý AI
+        return process_text_with_ai(model, "", full_prompt, max_retries)
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi xử lý multi-column: {str(e)}")
+        return f"Lỗi xử lý multi-column: {str(e)}"
+
+def _get_column_description(column_name):
+    """Tạo mô tả cho cột dựa trên tên cột"""
+    return column_name
+
 def estimate_completion_time(processed, total, start_time):
     """Ước tính thời gian hoàn thành"""
     if processed == 0:

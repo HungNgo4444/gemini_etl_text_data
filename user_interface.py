@@ -165,23 +165,74 @@ def get_user_input():
         if detected_col:
             print(f"\n💡 Tự động phát hiện cột text: '{detected_col}'")
         
-        while True:
-            choice = input(f"\nChọn cột cần xử lý (1-{len(df.columns)}) hoặc nhập tên cột: ").strip()
-            
-            if choice.isdigit():
-                col_index = int(choice) - 1
-                if 0 <= col_index < len(df.columns):
-                    user_config['message_column'] = df.columns[col_index]
-                    break
-                else:
-                    print(f"❌ Vui lòng chọn từ 1 đến {len(df.columns)}")
-            else:
-                if choice in df.columns:
-                    user_config['message_column'] = choice
-                    break
-                print("❌ Tên cột không tồn tại!")
+        print("\n🎯 Tùy chọn lựa chọn cột:")
+        print("  1️⃣  Chọn 1 cột duy nhất")
+        print("  2️⃣  Chọn nhiều cột để ghép lại")
         
-        print(f"✅ Đã chọn cột: '{user_config['message_column']}'")
+        while True:
+            mode_choice = input("\nChọn chế độ (1 hoặc 2): ").strip()
+            
+            if mode_choice == "1":
+                # Chế độ chọn 1 cột duy nhất
+                while True:
+                    choice = input(f"\nChọn cột cần xử lý (1-{len(df.columns)}) hoặc nhập tên cột: ").strip()
+                    
+                    if choice.isdigit():
+                        col_index = int(choice) - 1
+                        if 0 <= col_index < len(df.columns):
+                            user_config['message_column'] = df.columns[col_index]
+                            user_config['selected_columns'] = [df.columns[col_index]]
+                            user_config['multi_column_mode'] = False
+                            break
+                        else:
+                            print(f"❌ Vui lòng chọn từ 1 đến {len(df.columns)}")
+                    else:
+                        if choice in df.columns:
+                            user_config['message_column'] = choice
+                            user_config['selected_columns'] = [choice]
+                            user_config['multi_column_mode'] = False
+                            break
+                        print("❌ Tên cột không tồn tại!")
+                
+                print(f"✅ Đã chọn cột: '{user_config['message_column']}'")
+                break
+                
+            elif mode_choice == "2":
+                # Chế độ chọn nhiều cột
+                print("\n📝 Nhập các số cột cần xử lý, cách nhau bằng dấu phẩy")
+                print("   Ví dụ: 1,3,5 hoặc 2,4,6,8")
+                
+                while True:
+                    choices = input(f"\nNhập các số cột (1-{len(df.columns)}): ").strip()
+                    
+                    try:
+                        # Parse input
+                        column_indices = [int(x.strip()) - 1 for x in choices.split(',')]
+                        
+                        # Validate indices
+                        invalid_indices = [i+1 for i in column_indices if i < 0 or i >= len(df.columns)]
+                        if invalid_indices:
+                            print(f"❌ Số cột không hợp lệ: {invalid_indices}. Vui lòng chọn từ 1 đến {len(df.columns)}")
+                            continue
+                        
+                        # Get column names
+                        selected_columns = [df.columns[i] for i in column_indices]
+                        
+                        # Set config
+                        user_config['selected_columns'] = selected_columns
+                        user_config['message_column'] = selected_columns[0]  # First column as primary
+                        user_config['multi_column_mode'] = True
+                        
+                        print(f"\n✅ Đã chọn {len(selected_columns)} cột:")
+                        for i, col in enumerate(selected_columns, 1):
+                            print(f"  {i}. {col}")
+                        break
+                        
+                    except ValueError:
+                        print("❌ Format không đúng. Vui lòng nhập các số cách nhau bằng dấu phẩy (VD: 1,3,5)")
+                break
+            else:
+                print("❌ Vui lòng chọn 1 hoặc 2")
     else:
         print("❌ Không thể load file để phân tích cột")
         return None
@@ -263,7 +314,14 @@ def get_user_input():
     print("="*60)
     print(f"🤖 Model: {user_config['model_name']}")
     print(f"📁 File input: {Path(user_config['input_file']).name}")
-    print(f"📊 Cột xử lý: {user_config['message_column']}")
+    
+    if user_config.get('multi_column_mode', False):
+        print(f"📊 Chế độ: Nhiều cột ({len(user_config['selected_columns'])} cột)")
+        for i, col in enumerate(user_config['selected_columns'], 1):
+            print(f"     {i}. {col}")
+    else:
+        print(f"📊 Cột xử lý: {user_config['message_column']}")
+    
     print(f"💾 Checkpoint: {'Có' if user_config['use_checkpoint'] else 'Không'}")
     print(f"✍️ Prompt: {user_config['prompt'][:100]}...")
     

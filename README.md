@@ -22,6 +22,7 @@ Tạo ra một công cụ ETL (Extract, Transform, Load) linh hoạt sử dụng
 - ✅ Hỗ trợ Excel (.xlsx, .xls) và CSV
 - ✅ Tự động phát hiện encoding
 - ✅ Tự động phát hiện cột text
+- ✅ Hỗ trợ xử lý 1 cột hoặc nhiều cột cùng lúc
 - ✅ Preview dữ liệu trước khi xử lý
 
 ### 💾 Checkpoint thông minh
@@ -31,8 +32,10 @@ Tạo ra một công cụ ETL (Extract, Transform, Load) linh hoạt sử dụng
 
 ### ✍️ Prompt templates
 - ✅ Templates có sẵn: tóm tắt, phân loại, cảm xúc, từ khóa, dịch thuật
+- ✅ Hỗ trợ đọc prompt từ file .txt
 - ✅ Hỗ trợ prompt tùy chỉnh
 - ✅ Validation prompt input
+- ✅ Tự động định nghĩa cột cho multi-column
 
 ### 📊 Monitoring & Reporting
 - ✅ Progress bar real-time
@@ -84,12 +87,28 @@ Nhập đường dẫn file cần xử lý (.xlsx, .csv): data.xlsx
 📊 BƯỚC 4: Chọn cột dữ liệu
 File có 1000 dòng dữ liệu
 Các cột có sẵn:
-  1. ID (VD: 1)
+  1. ID (VD: MSG_001)
   2. MESSAGE (VD: Khách hàng hỏi về sản phẩm...)
-  3. DATE (VD: 2025-01-20)
+  3. AUTHOR (VD: Nguyễn Văn A)
+  4. PRODUCT (VD: ChocoPie Truyền Thống)
+  5. CHANNEL (VD: Facebook)
+  6. DATE (VD: 2025-01-20)
 
 💡 Tự động phát hiện cột text: 'MESSAGE'
-Chọn cột cần xử lý: 2
+
+🎯 Tùy chọn lựa chọn cột:
+  1️⃣  Chọn 1 cột duy nhất
+  2️⃣  Chọn nhiều cột để ghép lại
+
+Chọn chế độ (1 hoặc 2): 2
+📝 Nhập các số cột cần xử lý, cách nhau bằng dấu phẩy
+   Ví dụ: 1,3,5 hoặc 2,4,6,8
+
+Nhập các số cột (1-6): 2,3,4
+✅ Đã chọn 3 cột:
+  1. MESSAGE
+  2. AUTHOR  
+  3. PRODUCT
 ```
 
 #### Bước 5: Cấu hình checkpoint
@@ -123,9 +142,12 @@ Prompt preview: Bạn là một hệ thống phân loại và trích xuất thô
 📋 BƯỚC 7: Tổng kết cấu hình
 🤖 Model: gemma-3-27b-it
 📁 File input: data.xlsx
-📊 Cột xử lý: MESSAGE
+📊 Chế độ: Nhiều cột (3 cột)
+     1. MESSAGE
+     2. AUTHOR
+     3. PRODUCT
 💾 Checkpoint: Có
-✍️ Prompt: Hãy tóm tắt nội dung sau...
+✍️ Prompt: Bạn là chuyên gia phân tích dữ liệu khách hàng...
 
 Xác nhận bắt đầu xử lý? (y/n): y
 ```
@@ -215,6 +237,31 @@ Quy tắc phân loại:
 # Chọn option "Đọc prompt từ file (.txt)" và nhập đường dẫn
 Input: "Tôi muốn mua ChocoPie vị đào"
 Output: "Bánh ChocoPie|ChocoPie Vị Đào|Sản phẩm|Hỏi/Thảo luận nhắc đến sản phẩm|2"
+```
+
+### 5. Xử lý nhiều cột (Multi-column)
+```
+# Tạo data với nhiều cột thông tin
+ID | MESSAGE | AUTHOR | PRODUCT | CHANNEL
+1  | "Sản phẩm tuyệt vời!" | Nguyễn A | ChocoPie | Facebook
+2  | "Cần hỗ trợ đổi trả" | Trần B | Bánh quy | Instagram
+
+# Chọn chế độ "Nhiều cột để ghép lại"
+# Nhập: 2,3,4 (MESSAGE, AUTHOR, PRODUCT)
+
+# AI sẽ nhận được prompt với định nghĩa rõ ràng:
+THÔNG TIN CÁC CỘT:
+- Cột 1 (MESSAGE): MESSAGE
+- Cột 2 (AUTHOR): AUTHOR  
+- Cột 3 (PRODUCT): PRODUCT
+
+DỮ LIỆU CẦN XỬ LÝ:
+1. MESSAGE: Sản phẩm tuyệt vời!
+2. AUTHOR: Nguyễn A
+3. PRODUCT: ChocoPie
+
+# Kết quả tích hợp thông tin từ cả 3 cột
+Output: "Sentiment: Tích cực | Chủ đề: Review | Tóm tắt: Khách hàng đánh giá cao sản phẩm | Ghi chú: Nguyễn A review ChocoPie"
 ```
 
 ## 🛠️ Troubleshooting

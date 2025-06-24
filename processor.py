@@ -10,6 +10,7 @@ from utils import (
     load_checkpoint,
     save_checkpoint,
     process_text_with_ai,
+    process_multicolumn_with_ai,
     generate_output_filename,
     generate_checkpoint_filename,
     clean_text,
@@ -75,9 +76,21 @@ class AIDataProcessor:
             return False
         
         # 3. Kiểm tra cột cần xử lý
-        if self.config['message_column'] not in self.df.columns:
-            print(f"❌ Không tìm thấy cột '{self.config['message_column']}' trong file!")
-            return False
+        if self.config.get('multi_column_mode', False):
+            # Kiểm tra tất cả cột đã chọn
+            missing_columns = []
+            for col in self.config['selected_columns']:
+                if col not in self.df.columns:
+                    missing_columns.append(col)
+            
+            if missing_columns:
+                print(f"❌ Không tìm thấy các cột: {missing_columns}")
+                return False
+        else:
+            # Kiểm tra cột đơn
+            if self.config['message_column'] not in self.df.columns:
+                print(f"❌ Không tìm thấy cột '{self.config['message_column']}' trong file!")
+                return False
         
         # 4. Thêm cột kết quả nếu chưa có
         if AI_RESULT_COLUMN not in self.df.columns:
@@ -126,24 +139,50 @@ class AIDataProcessor:
                     self.df.at[idx, AI_RESULT_COLUMN] != ""):
                     continue
                 
-                # Bỏ qua nếu không có dữ liệu
-                if pd.isna(self.df.at[idx, self.config['message_column']]):
-                    continue
-                
                 try:
-                    # Lấy và làm sạch text
-                    text = clean_text(self.df.at[idx, self.config['message_column']])
-                    
-                    if not text:
-                        self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
-                        continue
-                    
-                    # Xử lý với AI
-                    result = process_text_with_ai(
-                        self.model, 
-                        text, 
-                        self.config['prompt']
-                    )
+                    # Xử lý theo chế độ
+                    if self.config.get('multi_column_mode', False):
+                        # Chế độ nhiều cột
+                        # Kiểm tra có dữ liệu trong ít nhất 1 cột không
+                        has_data = False
+                        row_data = {}
+                        
+                        for col in self.config['selected_columns']:
+                            value = self.df.at[idx, col]
+                            row_data[col] = value
+                            if pd.notna(value) and str(value).strip():
+                                has_data = True
+                        
+                        if not has_data:
+                            self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                            continue
+                        
+                        # Xử lý với AI multi-column
+                        result = process_multicolumn_with_ai(
+                            self.model,
+                            row_data,
+                            self.config['selected_columns'],
+                            self.config['prompt']
+                        )
+                    else:
+                        # Chế độ cột đơn
+                        # Bỏ qua nếu không có dữ liệu
+                        if pd.isna(self.df.at[idx, self.config['message_column']]):
+                            continue
+                        
+                        # Lấy và làm sạch text
+                        text = clean_text(self.df.at[idx, self.config['message_column']])
+                        
+                        if not text:
+                            self.df.at[idx, AI_RESULT_COLUMN] = "Không có dữ liệu"
+                            continue
+                        
+                        # Xử lý với AI
+                        result = process_text_with_ai(
+                            self.model, 
+                            text, 
+                            self.config['prompt']
+                        )
                     
                     # Lưu kết quả
                     self.df.at[idx, AI_RESULT_COLUMN] = result

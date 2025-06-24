@@ -51,7 +51,7 @@ TOP_K = 40
 # ===========================
 MAX_RETRIES = 3
 RETRY_DELAY = 60  # seconds
-REQUEST_DELAY = 2.0  # seconds between requests for safety
+REQUEST_DELAY = 5.0  # seconds between requests for safety
 
 # ===========================
 # FILE FORMAT SUPPORT
