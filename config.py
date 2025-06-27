@@ -5,19 +5,47 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ===========================
-# API CONFIGURATION
+# API PROVIDER CONFIGURATION
+# ===========================
+API_PROVIDER = ""  # Sẽ được input từ user: "gemini" hoặc "openai"
+
+# ===========================
+# GEMINI API CONFIGURATION
 # ===========================
 # Người dùng sẽ điền thông tin này khi chạy chương trình
 GEMINI_API_KEY = ""  # Sẽ được input từ user
-MODEL_NAME = ""      # Sẽ được input từ user (mặc định: gemma-3-27b-it)
+GEMINI_MODEL_NAME = ""      # Sẽ được input từ user (mặc định: gemma-3-27b-it)
 
 # Các model Gemini phổ biến
-AVAILABLE_MODELS = [
+AVAILABLE_GEMINI_MODELS = [
     "gemma-3-27b-it",
     "gemma-3n-e4b-it",
     "gemini-2.0-flash-lite",
     "gemini-2.5-flash"
 ]
+
+# ===========================
+# OPENAI API CONFIGURATION
+# ===========================
+OPENAI_API_KEY = ""  # Sẽ được input từ user
+OPENAI_MODEL_NAME = ""  # Sẽ được input từ user (mặc định: gpt-3.5-turbo)
+
+# Các model OpenAI phổ biến
+AVAILABLE_OPENAI_MODELS = [
+    "gpt-4.1-nano",
+    "gpt-4",
+    "gpt-4-turbo",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4.1-mini",
+    "gpt-4.1"
+]
+
+# ===========================
+# LEGACY CONFIGURATION (để tương thích ngược)
+# ===========================
+MODEL_NAME = ""      # Deprecated, sử dụng GEMINI_MODEL_NAME hoặc OPENAI_MODEL_NAME
+AVAILABLE_MODELS = AVAILABLE_GEMINI_MODELS  # Deprecated
 
 # ===========================
 # FILE CONFIGURATION
@@ -42,25 +70,25 @@ USER_PROMPT = ""
 # BATCH PROCESSING CONFIGURATION
 # ===========================
 ENABLE_BATCH_PROCESSING = True  # Bật/tắt batch processing
-BATCH_SIZE = 20  # Số records xử lý cùng lúc trong 1 batch
+BATCH_SIZE = 10  # Số records xử lý cùng lúc trong 1 batch
 MAX_BATCH_SIZE = 100  # Giới hạn tối đa batch size
 MIN_BATCH_SIZE = 1   # Giới hạn tối thiểu batch size
 
 # ===========================
 # PARALLEL PROCESSING CONFIGURATION
 # ===========================
-ENABLE_PARALLEL_PROCESSING = True  # Bật/tắt parallel processing
+ENABLE_PARALLEL_PROCESSING = False  # Bật/tắt parallel processing
 MAX_CONCURRENT_THREADS = 2         # Số threads chạy song song (conservative)
-THREAD_BATCH_SIZE = 5              # Số records mỗi thread xử lý trong 1 batch
-RATE_LIMIT_DELAY = 2.0             # Delay giữa các requests (seconds)
-MAX_RETRIES_PER_THREAD = 3         # Số lần retry cho mỗi thread
-THREAD_TIMEOUT = 300               # Timeout cho mỗi thread (seconds)
-CIRCUIT_BREAKER_THRESHOLD = 5      # Số lỗi liên tiếp để kích hoạt circuit breaker
+THREAD_BATCH_SIZE = 25              # Số records mỗi thread xử lý trong 1 batch (giảm mạnh)
+RATE_LIMIT_DELAY = 3.0             # Delay giữa các requests (seconds) (tăng lên)
+MAX_RETRIES_PER_THREAD = 2         # Số lần retry cho mỗi thread (giảm xuống)
+THREAD_TIMEOUT = 120               # Timeout cho mỗi thread (seconds) (giảm xuống)
+CIRCUIT_BREAKER_THRESHOLD = 3      # Số lỗi liên tiếp để kích hoạt circuit breaker (giảm xuống)
 
 # ===========================
 # MODEL PARAMETERS
 # ===========================
-MAX_OUTPUT_TOKENS = 1024
+MAX_OUTPUT_TOKENS = 10000
 TEMPERATURE = 0.3
 TOP_P = 0.8
 TOP_K = 40

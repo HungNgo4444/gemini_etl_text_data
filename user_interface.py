@@ -1,8 +1,20 @@
 import os
 import sys
 from pathlib import Path
-from config import AVAILABLE_MODELS, DEFAULT_PROMPT_TEMPLATES
-from utils import validate_file_path, validate_prompt, detect_message_column, load_data
+from config import AVAILABLE_GEMINI_MODELS, AVAILABLE_OPENAI_MODELS, DEFAULT_PROMPT_TEMPLATES
+from utils import validate_file_path, validate_prompt, detect_message_column, load_data, load_fine_tuned_models
+
+# Kiểm tra OpenAI availability
+def check_openai_available():
+    """Kiểm tra OpenAI availability động"""
+    try:
+        from utils import check_openai_availability
+        available, _ = check_openai_availability()
+        return available
+    except ImportError:
+        return False
+
+OPENAI_AVAILABLE = check_openai_available()
 
 def load_prompt_from_file():
     """Load prompt từ file text"""
@@ -77,55 +89,139 @@ def load_prompt_from_file():
 
 def get_user_input():
     """Thu thập thông tin từ người dùng"""
-    print("🚀 AI ETL DATA - Xử lý dữ liệu text với Gemini AI")
+    print("🚀 AI ETL DATA - Xử lý dữ liệu text với AI")
     print("="*60)
     
     user_config = {}
     
-    # 1. Nhập API Key
-    print("\n📡 BƯỚC 1: Cấu hình API Gemini")
+    # 1. Chọn API Provider
+    print("\n🔧 BƯỚC 1: Chọn API Provider")
+    print("-" * 40)
+    print("1. Gemini AI (Google)")
+    
+    # Kiểm tra lại động
+    openai_available = check_openai_available()
+    available_options = ["1"]
+    if openai_available:
+        print("2. OpenAI (ChatGPT)")
+        available_options.append("2")
+    else:
+        print("2. OpenAI (ChatGPT) - ❌ Không có sẵn (cần cài đặt: pip install openai>=1.0.0)")
+    
+    max_option = len(available_options)
+    prompt_text = f"\nChọn API provider ({'/'.join(available_options)}): " if max_option > 1 else "\nNhấn Enter để tiếp tục với Gemini AI: "
+    
+    while True:
+        if max_option == 1:
+            input(prompt_text)
+            user_config['api_provider'] = 'gemini'
+            print("✅ Đã chọn Gemini AI")
+            break
+        else:
+            provider_choice = input(prompt_text).strip()
+            if provider_choice == "1":
+                user_config['api_provider'] = 'gemini'
+                print("✅ Đã chọn Gemini AI")
+                break
+            elif provider_choice == "2" and openai_available:
+                user_config['api_provider'] = 'openai'
+                print("✅ Đã chọn OpenAI")
+                break
+            else:
+                if not openai_available and provider_choice == "2":
+                    print("❌ OpenAI không có sẵn. Vui lòng cài đặt: pip install openai>=1.0.0")
+                else:
+                    print(f"❌ Vui lòng chọn {' hoặc '.join(available_options)}")
+    
+    # 2. Nhập API Key
+    api_provider_name = "Gemini" if user_config['api_provider'] == 'gemini' else "OpenAI"
+    print(f"\n📡 BƯỚC 2: Cấu hình API {api_provider_name}")
     print("-" * 40)
     
     while True:
-        api_key = input("Nhập Gemini API Key: ").strip()
+        api_key = input(f"Nhập {api_provider_name} API Key: ").strip()
         if api_key:
             user_config['api_key'] = api_key
             print("✅ API Key đã được nhập")
             break
         print("❌ API Key không được để trống!")
     
-    # 2. Chọn model
-    print("\n🤖 BƯỚC 2: Chọn model AI")
+    # 3. Chọn model
+    print(f"\n🤖 BƯỚC 3: Chọn model AI")
     print("-" * 40)
-    print("Các model có sẵn:")
-    for i, model in enumerate(AVAILABLE_MODELS, 1):
-        print(f"  {i}. {model}")
+    
+    # Chọn models dựa trên provider
+    if user_config['api_provider'] == 'gemini':
+        # Load fine-tuned models cho Gemini
+        fine_tuned_models = load_fine_tuned_models()
+        all_models = []
+        model_info = {}
+        
+        # Thêm standard Gemini models
+        print("📋 GEMINI STANDARD MODELS:")
+        for i, model in enumerate(AVAILABLE_GEMINI_MODELS, 1):
+            print(f"  {i}. {model}")
+            all_models.append(model)
+            model_info[model] = None  # Standard model
+        
+        # Thêm fine-tuned models nếu có
+        if fine_tuned_models:
+            print("\n🎯 GEMINI FINE-TUNED MODELS:")
+            for name, info in fine_tuned_models.items():
+                index = len(all_models) + 1
+                display_name = info.get('display_name', name)
+                training_date = info.get('training_date', 'N/A')[:10]  # Only date part
+                print(f"  {index}. {display_name} (Fine-tuned: {training_date})")
+                all_models.append(name)
+                model_info[name] = info
+    else:
+        # OpenAI models
+        all_models = AVAILABLE_OPENAI_MODELS.copy()
+        model_info = {model: None for model in all_models}
+        fine_tuned_models = None
+        
+        print("📋 OPENAI MODELS:")
+        for i, model in enumerate(AVAILABLE_OPENAI_MODELS, 1):
+            print(f"  {i}. {model}")
     
     while True:
         try:
-            choice = input(f"Chọn model (1-{len(AVAILABLE_MODELS)}) hoặc nhập tên model khác: ").strip()
+            choice = input(f"\nChọn model (1-{len(all_models)}) hoặc nhập tên model khác: ").strip()
             
             # Kiểm tra nếu là số
             if choice.isdigit():
                 model_index = int(choice) - 1
-                if 0 <= model_index < len(AVAILABLE_MODELS):
-                    user_config['model_name'] = AVAILABLE_MODELS[model_index]
+                if 0 <= model_index < len(all_models):
+                    selected_model = all_models[model_index]
+                    user_config['model_name'] = selected_model
+                    user_config['fine_tuned_model_info'] = model_info[selected_model]
+                    
+                    # Hiển thị info cho fine-tuned model
+                    if user_config['api_provider'] == 'gemini' and model_info[selected_model]:
+                        print(f"✅ Đã chọn fine-tuned Gemini model: {selected_model}")
+                        print(f"📅 Training date: {model_info[selected_model].get('training_date', 'N/A')[:19]}")
+                        if model_info[selected_model].get('requires_context'):
+                            print(f"🎯 Model này sử dụng prompt context từ fine-tuning")
+                    else:
+                        api_name = "Gemini" if user_config['api_provider'] == 'gemini' else "OpenAI"
+                        print(f"✅ Đã chọn {api_name} model: {selected_model}")
                     break
                 else:
-                    print(f"❌ Vui lòng chọn từ 1 đến {len(AVAILABLE_MODELS)}")
+                    print(f"❌ Vui lòng chọn từ 1 đến {len(all_models)}")
             else:
                 # Người dùng nhập tên model khác
                 if choice:
                     user_config['model_name'] = choice
+                    user_config['fine_tuned_model_info'] = None
+                    api_name = "Gemini" if user_config['api_provider'] == 'gemini' else "OpenAI"
+                    print(f"✅ Đã chọn custom {api_name} model: {choice}")
                     break
                 print("❌ Tên model không được để trống!")
         except ValueError:
             print("❌ Vui lòng nhập số hợp lệ!")
     
-    print(f"✅ Đã chọn model: {user_config['model_name']}")
-    
-    # 3. Nhập đường dẫn file input
-    print("\n📁 BƯỚC 3: Chọn file dữ liệu")
+    # 4. Nhập đường dẫn file input
+    print("\n📁 BƯỚC 4: Chọn file dữ liệu")
     print("-" * 40)
     
     while True:
@@ -142,8 +238,8 @@ def get_user_input():
         else:
             print(f"❌ {message}")
     
-    # 4. Chọn cột cần xử lý
-    print("\n📊 BƯỚC 4: Chọn cột dữ liệu")
+    # 5. Chọn cột cần xử lý
+    print("\n📊 BƯỚC 5: Chọn cột dữ liệu")
     print("-" * 40)
     
     # Load file để hiển thị các cột
@@ -237,8 +333,8 @@ def get_user_input():
         print("❌ Không thể load file để phân tích cột")
         return None
     
-    # 5. Cấu hình checkpoint
-    print("\n💾 BƯỚC 5: Cấu hình checkpoint")
+    # 6. Cấu hình checkpoint
+    print("\n💾 BƯỚC 6: Cấu hình checkpoint")
     print("-" * 40)
     
     while True:
@@ -254,8 +350,8 @@ def get_user_input():
         else:
             print("❌ Vui lòng nhập 'y' hoặc 'n'")
     
-    # 6. Nhập prompt
-    print("\n✍️ BƯỚC 6: Cấu hình prompt AI")
+    # 7. Nhập prompt
+    print("\n✍️ BƯỚC 7: Cấu hình prompt AI")
     print("-" * 40)
     
     # Hiển thị các template có sẵn
@@ -309,9 +405,11 @@ def get_user_input():
         except ValueError:
             print("❌ Vui lòng nhập số hợp lệ!")
     
-    # 7. Tổng kết
-    print("\n📋 BƯỚC 7: Tổng kết cấu hình")
+    # 8. Tổng kết
+    print("\n📋 BƯỚC 8: Tổng kết cấu hình")
     print("="*60)
+    api_name = "Gemini" if user_config['api_provider'] == 'gemini' else "OpenAI"
+    print(f"🔧 API Provider: {api_name}")
     print(f"🤖 Model: {user_config['model_name']}")
     print(f"📁 File input: {Path(user_config['input_file']).name}")
     
@@ -343,7 +441,7 @@ def display_help():
 ================================
 
 📋 MÔ TẢ:
-Công cụ xử lý dữ liệu text bằng AI Gemini, hỗ trợ đa dạng các tác vụ:
+Công cụ xử lý dữ liệu text bằng AI (Gemini và OpenAI), hỗ trợ đa dạng các tác vụ:
 - Tóm tắt văn bản
 - Phân loại nội dung  
 - Phân tích cảm xúc
@@ -351,12 +449,16 @@ Công cụ xử lý dữ liệu text bằng AI Gemini, hỗ trợ đa dạng cá
 - Dịch thuật
 - Và nhiều tác vụ khác tùy chỉnh
 
+🤖 API HỖ TRỢ:
+- Gemini AI (Google): gemma-3-27b-it, gemini-2.0-flash, gemini-2.5-flash
+- OpenAI: gpt-3.5-turbo, gpt-4, gpt-4-turbo, gpt-4o, gpt-4o-mini
+
 📁 ĐỊNH DẠNG FILE HỖ TRỢ:
 - Excel (.xlsx, .xls)
 - CSV (.csv)
 
 ⚙️ TÍNH NĂNG:
-✅ Kết nối Gemini API với nhiều model
+✅ Hỗ trợ cả Gemini AI và OpenAI API
 ✅ Tự động phát hiện cột dữ liệu
 ✅ Checkpoint để tiếp tục khi bị dừng
 ✅ Prompt templates có sẵn + đọc từ file .txt
@@ -366,13 +468,14 @@ Công cụ xử lý dữ liệu text bằng AI Gemini, hỗ trợ đa dạng cá
 
 🚀 CÁCH SỬ DỤNG:
 1. Chạy: python main.py
-2. Nhập API Key Gemini
-3. Chọn model AI
-4. Chọn file dữ liệu (.xlsx/.csv)
-5. Chọn cột cần xử lý
-6. Cấu hình checkpoint
-7. Chọn/nhập prompt (template có sẵn, file .txt, hoặc tự nhập)
-8. Xác nhận và bắt đầu
+2. Chọn API Provider (Gemini/OpenAI)
+3. Nhập API Key
+4. Chọn model AI
+5. Chọn file dữ liệu (.xlsx/.csv)
+6. Chọn cột cần xử lý
+7. Cấu hình checkpoint
+8. Chọn/nhập prompt (template có sẵn, file .txt, hoặc tự nhập)
+9. Xác nhận và bắt đầu
 
 📊 KẾT QUẢ:
 - File kết quả: <tên_file>_ai_result_<timestamp>.<định_dạng>
@@ -387,10 +490,12 @@ Công cụ xử lý dữ liệu text bằng AI Gemini, hỗ trợ đa dạng cá
 
 def show_main_menu():
     """Hiển thị menu chính"""
-    print("\n🚀 AI ETL DATA - CÔNG CỤ XỬ LÝ DỮ LIỆU VỚI GEMINI AI")
+    print("\n🚀 AI ETL DATA - CÔNG CỤ XỬ LÝ DỮ LIỆU VỚI AI")
     print("="*60)
+    print("🤖 HỖ TRỢ MULTI-API:")
+    print("   🔥 Gemini AI: gemma-3-27b-it, gemini-2.0-flash, gemini-2.5-flash")
+    print("   🧠 OpenAI: gpt-3.5-turbo, gpt-4, gpt-4-turbo, gpt-4o, gpt-4o-mini")
     print("📋 TÍNH NĂNG CHÍNH:")
-    print("   ✅ Hỗ trợ đa model Gemini (gemma-3-27b-it, gemini-2.0-flash, v.v.)")
     print("   ✅ Xử lý file Excel/CSV với checkpoint thông minh")
     print("   ✅ Template prompt đa dạng + đọc prompt từ file")
     print("   ✅ Xử lý đa cột (multi-column) với AI analysis")

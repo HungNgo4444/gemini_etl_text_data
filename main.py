@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AI ETL Data - Công cụ xử lý dữ liệu text với Gemini AI
+AI ETL Data - Công cụ xử lý dữ liệu text với Gemini AI và OpenAI
 Hỗ trợ Batch Processing và Parallel Processing cho tốc độ tối ưu
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 # Thêm thư mục hiện tại vào Python path
 sys.path.append(str(Path(__file__).parent))
 
-from user_interface import collect_user_input, show_main_menu
+from user_interface import get_user_input, show_main_menu
 from processor import run_processor
 
 def main():
@@ -22,7 +22,7 @@ def main():
         show_main_menu()
         
         # Thu thập thông tin từ user
-        config = collect_user_input()
+        config = get_user_input()
         
         if not config:
             print("❌ Không thể thu thập thông tin cấu hình!")
@@ -52,6 +52,7 @@ def check_dependencies():
     required_packages = {
         'pandas': 'pandas',
         'google-generativeai': 'google.generativeai', 
+        'openai': 'openai',
         'tqdm': 'tqdm',
         'openpyxl': 'openpyxl'
     }

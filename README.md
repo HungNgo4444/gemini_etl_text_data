@@ -1,21 +1,24 @@
 # 🚀 AI ETL DATA
 
-Công cụ xử lý dữ liệu text đa năng với Google Gemini AI, được thiết kế để xử lý đa dạng các loại dữ liệu text theo nhu cầu của người dùng.
+Công cụ xử lý dữ liệu text đa năng với Google Gemini AI và OpenAI, được thiết kế để xử lý đa dạng các loại dữ liệu text theo nhu cầu của người dùng.
 
 ## 🎯 Mục tiêu
 
-Tạo ra một công cụ ETL (Extract, Transform, Load) linh hoạt sử dụng AI Gemini để:
+Tạo ra một công cụ ETL (Extract, Transform, Load) linh hoạt sử dụng AI Gemini và OpenAI để:
 - Xử lý dữ liệu text từ file Excel/CSV
 - Thực hiện đa dạng các tác vụ AI: tóm tắt, phân loại, phân tích cảm xúc, trích xuất thông tin...
 - Hỗ trợ checkpoint để xử lý file lớn
 - Giao diện người dùng thân thiện
+- Linh hoạt chọn giữa Gemini AI và OpenAI
 
 ## ✨ Tính năng chính
 
 ### 🤖 Kết nối AI linh hoạt
-- ✅ Hỗ trợ multiple Gemini models (gemma-3-27b-it, gemini-2.0-flash-lite, etc.)
-- ✅ User tự nhập API Key và chọn model
-- ✅ Xử lý lỗi và retry thông minh
+- ✅ **Hỗ trợ đa API**: Gemini AI và OpenAI
+- ✅ **Gemini models**: gemma-3-27b-it, gemini-2.0-flash-lite, gemini-2.5-flash
+- ✅ **OpenAI models**: gpt-3.5-turbo, gpt-4, gpt-4-turbo, gpt-4o, gpt-4o-mini
+- ✅ User tự chọn API provider và nhập API Key
+- ✅ Xử lý lỗi và retry thông minh cho cả 2 API
 - ✅ Rate limiting tự động
 - ⚡ **Batch Processing**: Xử lý 5-10 records/API call (tăng tốc 5-10x)
 
@@ -61,13 +64,21 @@ python main.py
 
 ### 3. Quy trình sử dụng
 
-#### Bước 1: Cấu hình API
+#### Bước 1: Chọn API Provider
 ```
-📡 BƯỚC 1: Cấu hình API Gemini
+🔧 BƯỚC 1: Chọn API Provider
+1. Gemini AI (Google)
+2. OpenAI (ChatGPT)
+Chọn API provider (1 hoặc 2): 1
+```
+
+#### Bước 2: Cấu hình API
+```
+📡 BƯỚC 2: Cấu hình API Gemini
 Nhập Gemini API Key: [YOUR_API_KEY]
 ```
 
-#### Bước 2: Chọn model
+#### Bước 3: Chọn model
 ```
 🤖 BƯỚC 2: Chọn model AI
 Các model có sẵn:

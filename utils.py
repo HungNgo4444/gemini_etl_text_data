@@ -3,9 +3,27 @@ import numpy as np
 import os
 import time
 import logging
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 import google.generativeai as genai
+def check_openai_availability():
+    """Kiểm tra OpenAI availability động"""
+    try:
+        from openai import OpenAI
+        return True, OpenAI
+    except ImportError:
+        try:
+            import openai
+            if hasattr(openai, 'OpenAI'):
+                return True, openai.OpenAI
+            else:
+                return False, None
+        except ImportError:
+            return False, None
+
+# Kiểm tra ban đầu
+OPENAI_AVAILABLE, OpenAI = check_openai_availability()
 from tqdm import tqdm
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -49,12 +67,21 @@ def setup_logging():
 
 logger = setup_logging()
 
-def initialize_gemini(api_key, model_name):
-    """Khởi tạo Gemini API với cấu hình"""
+def initialize_gemini(api_key, model_name, fine_tuned_model_info=None):
+    """Khởi tạo Gemini API với cấu hình (hỗ trợ fine-tuned models)"""
     try:
         genai.configure(api_key=api_key)
+        
+        # Nếu là fine-tuned model, sử dụng model_id
+        if fine_tuned_model_info and fine_tuned_model_info.get('model_id'):
+            actual_model_name = fine_tuned_model_info['model_id']
+            logger.info(f"🎯 Sử dụng fine-tuned model: {actual_model_name}")
+        else:
+            actual_model_name = model_name
+            logger.info(f"🤖 Sử dụng standard model: {actual_model_name}")
+        
         model = genai.GenerativeModel(
-            model_name=model_name,
+            model_name=actual_model_name,
             generation_config={
                 "max_output_tokens": MAX_OUTPUT_TOKENS,
                 "temperature": TEMPERATURE,
@@ -62,10 +89,87 @@ def initialize_gemini(api_key, model_name):
                 "top_k": TOP_K,
             }
         )
-        logger.info(f"✅ Đã khởi tạo Gemini model: {model_name}")
+        
+        # Attach fine-tuned model info nếu có
+        if fine_tuned_model_info:
+            model._fine_tuned_info = fine_tuned_model_info
+        
+        # Attach API provider info
+        model._api_provider = 'gemini'
+        
+        logger.info(f"✅ Đã khởi tạo Gemini model: {actual_model_name}")
         return model
     except Exception as e:
         logger.error(f"❌ Lỗi khởi tạo Gemini: {str(e)}")
+        return None
+
+def initialize_openai(api_key, model_name):
+    """Khởi tạo OpenAI API với cấu hình"""
+    # Kiểm tra lại động
+    available, openai_class = check_openai_availability()
+    if not available or openai_class is None:
+        raise ImportError("OpenAI package không có sẵn hoặc version không tương thích. Vui lòng cài đặt: pip install openai>=1.0.0")
+    
+    try:
+        client = openai_class(api_key=api_key)
+        
+        # Test connection
+        test_response = client.models.list()
+        
+        # Create a wrapper object that behaves like Gemini model
+        class OpenAIModelWrapper:
+            def __init__(self, client, model_name):
+                self.client = client
+                self.model_name = model_name
+                self._api_provider = 'openai'
+                self._fine_tuned_info = None
+            
+            def generate_content(self, prompt):
+                try:
+                    response = self.client.chat.completions.create(
+                        model=self.model_name,
+                        messages=[
+                            {"role": "user", "content": prompt}
+                        ],
+                        max_tokens=MAX_OUTPUT_TOKENS,
+                        temperature=TEMPERATURE,
+                        top_p=TOP_P
+                    )
+                    
+                    if response.choices and response.choices[0].message:
+                        # Create response object similar to Gemini
+                        class ResponseWrapper:
+                            def __init__(self, text):
+                                self.text = text
+                        
+                        return ResponseWrapper(response.choices[0].message.content)
+                    else:
+                        return None
+                        
+                except Exception as e:
+                    raise Exception(f"OpenAI API error: {str(e)}")
+        
+        model = OpenAIModelWrapper(client, model_name)
+        logger.info(f"✅ Đã khởi tạo OpenAI model: {model_name}")
+        return model
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi khởi tạo OpenAI: {str(e)}")
+        return None
+
+def initialize_ai_model(api_provider, api_key, model_name, fine_tuned_model_info=None):
+    """Khởi tạo AI model dựa trên provider"""
+    if api_provider == 'gemini':
+        return initialize_gemini(api_key, model_name, fine_tuned_model_info)
+    elif api_provider == 'openai':
+        # Kiểm tra lại động
+        available, _ = check_openai_availability()
+        if not available:
+            logger.error("❌ OpenAI package không có sẵn. Vui lòng cài đặt: pip install openai>=1.0.0")
+            return None
+        return initialize_openai(api_key, model_name)
+    else:
+        logger.error(f"❌ API provider không được hỗ trợ: {api_provider}")
         return None
 
 def validate_file_path(file_path):
@@ -184,11 +288,31 @@ def save_checkpoint(df, checkpoint_file):
         logger.error(f"❌ Lỗi lưu checkpoint: {str(e)}")
 
 def process_text_with_ai(model, text, prompt, max_retries=MAX_RETRIES):
-    """Xử lý text với AI model"""
+    """Xử lý text với AI model (hỗ trợ fine-tuned models với prompt context)"""
     for attempt in range(max_retries):
         try:
-            # Tạo prompt đầy đủ
-            full_prompt = f"{prompt}\n\nNội dung cần xử lý:\n{text}\n\nKết quả:"
+            # Kiểm tra nếu là fine-tuned model với prompt context
+            if hasattr(model, '_fine_tuned_info') and model._fine_tuned_info:
+                fine_tuned_info = model._fine_tuned_info
+                
+                # Nếu model có prompt context, sử dụng format đã training
+                if fine_tuned_info.get('requires_context', False):
+                    prompt_context = fine_tuned_info.get('prompt_context', {})
+                    context_template = prompt_context.get('template', '')
+                    
+                    if context_template:
+                        # Apply prompt context template
+                        full_prompt = apply_fine_tuned_prompt_context(
+                            text, prompt, context_template
+                        )
+                        logger.debug(f"🎯 Sử dụng fine-tuned prompt context")
+                    else:
+                        full_prompt = f"{prompt}\n\nNội dung cần xử lý:\n{text}\n\nKết quả:"
+                else:
+                    full_prompt = f"{prompt}\n\nNội dung cần xử lý:\n{text}\n\nKết quả:"
+            else:
+                # Standard model processing
+                full_prompt = f"{prompt}\n\nNội dung cần xử lý:\n{text}\n\nKết quả:"
             
             # Gọi API
             response = model.generate_content(full_prompt)
@@ -206,8 +330,9 @@ def process_text_with_ai(model, text, prompt, max_retries=MAX_RETRIES):
         except Exception as e:
             error_msg = str(e)
             
-            # Xử lý lỗi rate limit
-            if "429" in error_msg or "quota" in error_msg.lower():
+            # Xử lý lỗi rate limit (cho cả Gemini và OpenAI)
+            if ("429" in error_msg or "quota" in error_msg.lower() or 
+                "rate_limit" in error_msg.lower() or "too_many_requests" in error_msg.lower()):
                 if attempt < max_retries - 1:
                     wait_time = RETRY_DELAY * (attempt + 1)  # Tăng dần thời gian chờ
                     logger.warning(f"⏳ Rate limit reached. Chờ {wait_time} giây...")
@@ -304,8 +429,9 @@ KẾT QUẢ:"""
             except Exception as e:
                 error_msg = str(e)
                 
-                # Xử lý lỗi rate limit
-                if "429" in error_msg or "quota" in error_msg.lower():
+                # Xử lý lỗi rate limit (cho cả Gemini và OpenAI)
+                if ("429" in error_msg or "quota" in error_msg.lower() or 
+                    "rate_limit" in error_msg.lower() or "too_many_requests" in error_msg.lower()):
                     if attempt < max_retries - 1:
                         wait_time = RETRY_DELAY * (attempt + 1)
                         logger.warning(f"⏳ Rate limit reached. Chờ {wait_time} giây...")
@@ -394,8 +520,9 @@ KẾT QUẢ:"""
             except Exception as e:
                 error_msg = str(e)
                 
-                # Xử lý lỗi rate limit
-                if "429" in error_msg or "quota" in error_msg.lower():
+                # Xử lý lỗi rate limit (cho cả Gemini và OpenAI)
+                if ("429" in error_msg or "quota" in error_msg.lower() or 
+                    "rate_limit" in error_msg.lower() or "too_many_requests" in error_msg.lower()):
                     if attempt < max_retries - 1:
                         wait_time = RETRY_DELAY * (attempt + 1)
                         logger.warning(f"⏳ Rate limit reached. Chờ {wait_time} giây...")
@@ -575,6 +702,11 @@ def process_data_parallel(model, data, column_names, prompt, is_multicolumn=Fals
         logger.info("🔄 Parallel processing bị tắt, chuyển về batch processing")
         return process_data_batch_only(model, data, column_names, prompt, is_multicolumn)
     
+    # Kiểm tra nếu dữ liệu quá ít thì không cần parallel
+    if len(data) < MAX_CONCURRENT_THREADS * THREAD_BATCH_SIZE:
+        logger.info(f"📦 Dữ liệu quá ít ({len(data)} items), chuyển về batch processing")
+        return process_data_batch_only(model, data, column_names, prompt, is_multicolumn)
+    
     try:
         total_items = len(data)
         logger.info(f"🚀 Bắt đầu parallel processing: {total_items} items với {MAX_CONCURRENT_THREADS} threads")
@@ -588,6 +720,7 @@ def process_data_parallel(model, data, column_names, prompt, is_multicolumn=Fals
             thread_batches.append(batch)
         
         logger.info(f"📦 Đã chia thành {len(thread_batches)} batches, mỗi batch {batch_size} items")
+        logger.info(f"⚡ Max concurrent: {MAX_CONCURRENT_THREADS} threads, delay: {RATE_LIMIT_DELAY}s")
         
         # Setup circuit breaker và progress tracking
         circuit_breaker = CircuitBreaker()
@@ -612,29 +745,44 @@ def process_data_parallel(model, data, column_names, prompt, is_multicolumn=Fals
             
             # Collect results với progress tracking
             with tqdm(total=total_items, desc="🔄 Parallel Processing") as pbar:
-                for future in as_completed(future_to_index, timeout=THREAD_TIMEOUT):
-                    try:
-                        index = future_to_index[future]
-                        results = future.result()
-                        all_results[index] = results
-                        
-                        # Update progress
-                        batch_size_actual = len(thread_batches[index])
-                        total_processed += batch_size_actual
-                        completed_threads += 1
-                        pbar.update(batch_size_actual)
-                        
-                        # Progress report
-                        elapsed = time.time() - start_time
-                        rate = total_processed / elapsed if elapsed > 0 else 0
-                        logger.info(f"📈 Thread {index} hoàn thành - Tổng: {total_processed}/{total_items} ({rate:.2f} items/s)")
-                        
-                    except Exception as e:
-                        index = future_to_index[future]
-                        logger.error(f"❌ Thread {index} timeout hoặc lỗi: {str(e)}")
-                        # Tạo kết quả lỗi cho batch này
-                        batch_size_error = len(thread_batches[index])
-                        all_results[index] = [f"Lỗi timeout: {str(e)}"] * batch_size_error
+                try:
+                    for future in as_completed(future_to_index, timeout=THREAD_TIMEOUT):
+                        try:
+                            index = future_to_index[future]
+                            results = future.result(timeout=30)  # Timeout ngắn hơn cho individual result
+                            all_results[index] = results
+                            
+                            # Update progress
+                            batch_size_actual = len(thread_batches[index])
+                            total_processed += batch_size_actual
+                            completed_threads += 1
+                            pbar.update(batch_size_actual)
+                            
+                            # Progress report
+                            elapsed = time.time() - start_time
+                            rate = total_processed / elapsed if elapsed > 0 else 0
+                            logger.info(f"📈 Thread {index} hoàn thành - Tổng: {total_processed}/{total_items} ({rate:.2f} items/s)")
+                            
+                        except Exception as e:
+                            index = future_to_index[future]
+                            logger.error(f"❌ Thread {index} lỗi: {str(e)}")
+                            # Tạo kết quả lỗi cho batch này
+                            batch_size_error = len(thread_batches[index])
+                            all_results[index] = [f"Lỗi thread: {str(e)}"] * batch_size_error
+                            # Update progress vẫn cần thiết
+                            total_processed += batch_size_error
+                            pbar.update(batch_size_error)
+                            
+                except Exception as timeout_error:
+                    logger.error(f"❌ Timeout tổng thể: {str(timeout_error)}")
+                    # Xử lý các futures chưa hoàn thành
+                    for future, index in future_to_index.items():
+                        if not future.done():
+                            batch_size_error = len(thread_batches[index])
+                            all_results[index] = [f"Lỗi timeout tổng thể"] * batch_size_error
+                            total_processed += batch_size_error
+                            pbar.update(batch_size_error)
+                            logger.warning(f"⚠️ Thread {index} chưa hoàn thành, tạo kết quả mặc định")
         
         # Flatten results
         final_results = []
@@ -769,4 +917,58 @@ def get_processing_stats(df, result_column):
         'processed': processed,
         'remaining': remaining,
         'errors': errors
-    } 
+    }
+
+def apply_fine_tuned_prompt_context(text, prompt, context_template):
+    """
+    Apply prompt context template cho fine-tuned model
+    
+    Args:
+        text: Input text
+        prompt: User prompt  
+        context_template: Template từ fine-tuning
+        
+    Returns:
+        str: Formatted prompt theo fine-tuned model
+    """
+    try:
+        # Tạo context data
+        context_data = {
+            'input_data': text,
+            'input_text': text,
+            'content': text,
+            'message': text,
+            'context_info': prompt,
+            'context_data': prompt,
+            'metadata': prompt,
+            'additional_context': prompt
+        }
+        
+        # Apply template với placeholder replacement
+        formatted_prompt = context_template
+        
+        for key, value in context_data.items():
+            placeholder = f"{{{key}}}"
+            if placeholder in formatted_prompt:
+                formatted_prompt = formatted_prompt.replace(placeholder, str(value))
+        
+        logger.debug(f"📝 Applied fine-tuned context template")
+        return formatted_prompt
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Lỗi apply context template: {str(e)}, fallback to standard")
+        return f"{prompt}\n\nNội dung cần xử lý:\n{text}\n\nKết quả:"
+
+def load_fine_tuned_models():
+    """Load danh sách fine-tuned models từ registry"""
+    try:
+        registry_file = "fine_tuned_models.json"
+        if os.path.exists(registry_file):
+            with open(registry_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data.get('fine_tuned_models', {})
+        else:
+            return {}
+    except Exception as e:
+        logger.warning(f"⚠️ Không thể load fine-tuned models: {str(e)}")
+        return {} 

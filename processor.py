@@ -4,7 +4,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 from utils import (
-    initialize_gemini,
+    initialize_ai_model,
     load_data,
     save_data,
     load_checkpoint,
@@ -59,14 +59,18 @@ class AIDataProcessor:
         print("="*50)
         
         # 1. Khởi tạo AI model
-        print("🤖 Đang khởi tạo Gemini model...")
-        self.model = initialize_gemini(
+        api_provider_name = "Gemini" if self.config['api_provider'] == 'gemini' else "OpenAI"
+        print(f"🤖 Đang khởi tạo {api_provider_name} model...")
+        fine_tuned_model_info = self.config.get('fine_tuned_model_info')
+        self.model = initialize_ai_model(
+            self.config['api_provider'],
             self.config['api_key'], 
-            self.config['model_name']
+            self.config['model_name'],
+            fine_tuned_model_info
         )
         
         if not self.model:
-            print("❌ Không thể khởi tạo Gemini model!")
+            print(f"❌ Không thể khởi tạo {api_provider_name} model!")
             return False
         
         # 2. Load dữ liệu
