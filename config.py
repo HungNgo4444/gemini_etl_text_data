@@ -77,18 +77,31 @@ MIN_BATCH_SIZE = 1   # Giới hạn tối thiểu batch size
 # ===========================
 # PARALLEL PROCESSING CONFIGURATION
 # ===========================
-ENABLE_PARALLEL_PROCESSING = False  # Bật/tắt parallel processing
-MAX_CONCURRENT_THREADS = 2         # Số threads chạy song song (conservative)
-THREAD_BATCH_SIZE = 25              # Số records mỗi thread xử lý trong 1 batch (giảm mạnh)
-RATE_LIMIT_DELAY = 3.0             # Delay giữa các requests (seconds) (tăng lên)
-MAX_RETRIES_PER_THREAD = 2         # Số lần retry cho mỗi thread (giảm xuống)
-THREAD_TIMEOUT = 120               # Timeout cho mỗi thread (seconds) (giảm xuống)
-CIRCUIT_BREAKER_THRESHOLD = 3      # Số lỗi liên tiếp để kích hoạt circuit breaker (giảm xuống)
+ENABLE_PARALLEL_PROCESSING = False  # Bật/tắt parallel processing (legacy)
+MAX_CONCURRENT_THREADS = 2         # Số threads chạy song song (legacy)
+THREAD_BATCH_SIZE = 25              # Số records mỗi thread xử lý trong 1 batch (legacy)
+RATE_LIMIT_DELAY = 3.0             # Delay giữa các requests (seconds) (legacy)
+MAX_RETRIES_PER_THREAD = 2         # Số lần retry cho mỗi thread (legacy)
+THREAD_TIMEOUT = 120               # Timeout cho mỗi thread (seconds) (legacy)
+CIRCUIT_BREAKER_THRESHOLD = 3      # Số lỗi liên tiếp để kích hoạt circuit breaker (legacy)
+
+# ===========================
+# ASYNC PROCESSING CONFIGURATION
+# ===========================
+ENABLE_ASYNC_PROCESSING = True     # Bật/tắt async processing (MẶC ĐỊNH BẬT)
+MAX_CONCURRENT_REQUESTS = 5       # Số requests đồng thời tối đa (semaphore limit)
+ASYNC_BATCH_SIZE = 5             # Số items xử lý trong 1 batch async (TĂNG ĐỂ NHANH HƠN!)
+ASYNC_CHUNK_SIZE = 300             # Số items xử lý trong 1 chunk (để chia nhỏ workload)
+ASYNC_RATE_LIMIT_RPM = 300          # Rate limit: requests per minute
+ASYNC_TIMEOUT = 60                 # Timeout cho mỗi async request (seconds)
+ASYNC_MAX_RETRIES = 3              # Số lần retry cho async requests
+ASYNC_RETRY_DELAY = 2              # Delay base cho exponential backoff (seconds)
+ASYNC_ENABLE_RATE_LIMITER = True   # Bật dynamic rate limiter
 
 # ===========================
 # MODEL PARAMETERS
 # ===========================
-MAX_OUTPUT_TOKENS = 10000
+MAX_OUTPUT_TOKENS = 30000
 TEMPERATURE = 0.3
 TOP_P = 0.8
 TOP_K = 40

@@ -33,8 +33,6 @@ def main():
         
         if success:
             print("\n🎉 Hoàn thành thành công!")
-            print("📧 Liên hệ: AI ETL Data Team")
-            print("🔗 GitHub: https://github.com/HungNgo4444/gemini_etl_text_data")
         else:
             print("\n❌ Quá trình xử lý gặp lỗi!")
             

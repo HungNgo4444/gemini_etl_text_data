@@ -7,6 +7,44 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 import google.generativeai as genai
+import asyncio
+
+# Import async processor
+try:
+    from async_processor import process_data_async
+    ASYNC_AVAILABLE = True
+except ImportError as e:
+    ASYNC_AVAILABLE = False
+    print(f"⚠️ Async processing không khả dụng: {e}")
+
+# Import config
+from config import (
+    MAX_OUTPUT_TOKENS,
+    TEMPERATURE, 
+    TOP_P,
+    TOP_K,
+    MAX_RETRIES,
+    RETRY_DELAY,
+    REQUEST_DELAY,
+    SUPPORTED_FORMATS,
+    LOG_FILE,
+    LOG_LEVEL,
+    BATCH_SIZE,
+    ENABLE_BATCH_PROCESSING,
+    ENABLE_PARALLEL_PROCESSING,
+    ENABLE_ASYNC_PROCESSING,
+    MAX_CONCURRENT_THREADS,
+    THREAD_BATCH_SIZE,
+    RATE_LIMIT_DELAY,
+    MAX_RETRIES_PER_THREAD,
+    THREAD_TIMEOUT,
+    CIRCUIT_BREAKER_THRESHOLD,
+    GEMINI_API_KEY,
+    GEMINI_MODEL_NAME,
+    OPENAI_API_KEY,
+    OPENAI_MODEL_NAME
+)
+
 def check_openai_availability():
     """Kiểm tra OpenAI availability động"""
     try:
@@ -29,29 +67,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 import traceback
-
-# Import config
-from config import (
-    MAX_OUTPUT_TOKENS,
-    TEMPERATURE, 
-    TOP_P,
-    TOP_K,
-    MAX_RETRIES,
-    RETRY_DELAY,
-    REQUEST_DELAY,
-    SUPPORTED_FORMATS,
-    LOG_FILE,
-    LOG_LEVEL,
-    BATCH_SIZE,
-    ENABLE_BATCH_PROCESSING,
-    ENABLE_PARALLEL_PROCESSING,
-    MAX_CONCURRENT_THREADS,
-    THREAD_BATCH_SIZE,
-    RATE_LIMIT_DELAY,
-    MAX_RETRIES_PER_THREAD,
-    THREAD_TIMEOUT,
-    CIRCUIT_BREAKER_THRESHOLD
-)
 
 def setup_logging():
     """Thiết lập logging cho ứng dụng"""
@@ -96,6 +111,8 @@ def initialize_gemini(api_key, model_name, fine_tuned_model_info=None):
         
         # Attach API provider info
         model._api_provider = 'gemini'
+        model._api_key = api_key
+        model._model_name = actual_model_name
         
         logger.info(f"✅ Đã khởi tạo Gemini model: {actual_model_name}")
         return model
@@ -123,6 +140,8 @@ def initialize_openai(api_key, model_name):
                 self.model_name = model_name
                 self._api_provider = 'openai'
                 self._fine_tuned_info = None
+                self._api_key = client.api_key
+                self._model_name = model_name
             
             def generate_content(self, prompt):
                 try:
@@ -160,14 +179,22 @@ def initialize_openai(api_key, model_name):
 def initialize_ai_model(api_provider, api_key, model_name, fine_tuned_model_info=None):
     """Khởi tạo AI model dựa trên provider"""
     if api_provider == 'gemini':
-        return initialize_gemini(api_key, model_name, fine_tuned_model_info)
+        model = initialize_gemini(api_key, model_name, fine_tuned_model_info)
+        if model:
+            # Thêm thông tin API provider cho async processing
+            model._api_provider = "gemini"
+        return model
     elif api_provider == 'openai':
         # Kiểm tra lại động
         available, _ = check_openai_availability()
         if not available:
             logger.error("❌ OpenAI package không có sẵn. Vui lòng cài đặt: pip install openai>=1.0.0")
             return None
-        return initialize_openai(api_key, model_name)
+        model = initialize_openai(api_key, model_name)
+        if model:
+            # Thêm thông tin API provider cho async processing
+            model._api_provider = "openai"
+        return model
     else:
         logger.error(f"❌ API provider không được hỗ trợ: {api_provider}")
         return None
@@ -696,121 +723,93 @@ def process_parallel_batch_worker(thread_id, model, batch_data, column_names, pr
         
         return results
 
-def process_data_parallel(model, data, column_names, prompt, is_multicolumn=False):
-    """Xử lý dữ liệu với parallel processing"""
-    if not ENABLE_PARALLEL_PROCESSING:
-        logger.info("🔄 Parallel processing bị tắt, chuyển về batch processing")
+def process_data_with_async(model, data, column_names, prompt, is_multicolumn=False):
+    """Xử lý dữ liệu với Async Processing (thay thế parallel processing)"""
+    # Import config tại runtime để tránh lỗi circular import
+    try:
+        from config import ENABLE_ASYNC_PROCESSING
+    except ImportError as e:
+        logger.error(f"❌ Không thể import config: {e}")
         return process_data_batch_only(model, data, column_names, prompt, is_multicolumn)
     
-    # Kiểm tra nếu dữ liệu quá ít thì không cần parallel
-    if len(data) < MAX_CONCURRENT_THREADS * THREAD_BATCH_SIZE:
-        logger.info(f"📦 Dữ liệu quá ít ({len(data)} items), chuyển về batch processing")
+    if not ASYNC_AVAILABLE:
+        logger.warning("⚠️ Async processing không khả dụng, fallback về batch processing")
+        return process_data_batch_only(model, data, column_names, prompt, is_multicolumn)
+    
+    if not ENABLE_ASYNC_PROCESSING:
+        logger.info("🔄 Async processing bị tắt, chuyển về batch processing")
         return process_data_batch_only(model, data, column_names, prompt, is_multicolumn)
     
     try:
         total_items = len(data)
-        logger.info(f"🚀 Bắt đầu parallel processing: {total_items} items với {MAX_CONCURRENT_THREADS} threads")
+        logger.info(f"🚀 Starting async processing: {total_items} items")
         
-        # Chia dữ liệu thành các batches cho các threads
-        thread_batches = []
-        batch_size = THREAD_BATCH_SIZE
+        # Extract API info từ model - LẤY TRỰC TIẾP TỪ MODEL OBJECT
+        api_provider = getattr(model, '_api_provider', 'gemini')
         
-        for i in range(0, total_items, batch_size):
-            batch = data[i:i+batch_size]
-            thread_batches.append(batch)
+        # Lấy API key và model name từ model object (đã được set khi initialize)
+        if hasattr(model, '_api_key') and hasattr(model, '_model_name'):
+            api_key = model._api_key
+            model_name = model._model_name
+            logger.info(f"🔑 Sử dụng API key từ model: {api_provider} - {model_name}")
+        else:
+            # Không có API key trong model, fallback về batch processing
+            logger.warning("⚠️ Model không có API key cho async processing, fallback về batch processing")
+            return process_data_batch_only(model, data, column_names, prompt, is_multicolumn)
         
-        logger.info(f"📦 Đã chia thành {len(thread_batches)} batches, mỗi batch {batch_size} items")
-        logger.info(f"⚡ Max concurrent: {MAX_CONCURRENT_THREADS} threads, delay: {RATE_LIMIT_DELAY}s")
+        # Prepare data cho async processing
+        if is_multicolumn:
+            # Convert DataFrame rows to dict cho multicolumn
+            data_for_async = []
+            for _, row in data.iterrows() if hasattr(data, 'iterrows') else enumerate(data):
+                if hasattr(data, 'iterrows'):
+                    data_for_async.append(row.to_dict())
+                else:
+                    # Nếu data là list of dicts
+                    data_for_async.append(row)
+        else:
+            # Single column data
+            if hasattr(data, 'tolist'):
+                data_for_async = data.tolist()
+            else:
+                data_for_async = list(data)
         
-        # Setup circuit breaker và progress tracking
-        circuit_breaker = CircuitBreaker()
-        progress_queue = Queue()
-        all_results = [None] * len(thread_batches)
+        # Run async processing
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
-        # Progress tracking
-        completed_threads = 0
-        total_processed = 0
-        start_time = time.time()
-        
-        # Chạy parallel processing với ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_THREADS) as executor:
-            # Submit all tasks
-            future_to_index = {}
-            for i, batch in enumerate(thread_batches):
-                future = executor.submit(
-                    process_parallel_batch_worker,
-                    i, model, batch, column_names, prompt, is_multicolumn, circuit_breaker, progress_queue
+        try:
+            results = loop.run_until_complete(
+                process_data_async(
+                    api_provider=api_provider,
+                    api_key=api_key,
+                    model_name=model_name,
+                    data=data_for_async,
+                    prompt_template=prompt,
+                    is_multicolumn=is_multicolumn,
+                    column_names=column_names
                 )
-                future_to_index[future] = i
+            )
             
-            # Collect results với progress tracking
-            with tqdm(total=total_items, desc="🔄 Parallel Processing") as pbar:
-                try:
-                    for future in as_completed(future_to_index, timeout=THREAD_TIMEOUT):
-                        try:
-                            index = future_to_index[future]
-                            results = future.result(timeout=30)  # Timeout ngắn hơn cho individual result
-                            all_results[index] = results
-                            
-                            # Update progress
-                            batch_size_actual = len(thread_batches[index])
-                            total_processed += batch_size_actual
-                            completed_threads += 1
-                            pbar.update(batch_size_actual)
-                            
-                            # Progress report
-                            elapsed = time.time() - start_time
-                            rate = total_processed / elapsed if elapsed > 0 else 0
-                            logger.info(f"📈 Thread {index} hoàn thành - Tổng: {total_processed}/{total_items} ({rate:.2f} items/s)")
-                            
-                        except Exception as e:
-                            index = future_to_index[future]
-                            logger.error(f"❌ Thread {index} lỗi: {str(e)}")
-                            # Tạo kết quả lỗi cho batch này
-                            batch_size_error = len(thread_batches[index])
-                            all_results[index] = [f"Lỗi thread: {str(e)}"] * batch_size_error
-                            # Update progress vẫn cần thiết
-                            total_processed += batch_size_error
-                            pbar.update(batch_size_error)
-                            
-                except Exception as timeout_error:
-                    logger.error(f"❌ Timeout tổng thể: {str(timeout_error)}")
-                    # Xử lý các futures chưa hoàn thành
-                    for future, index in future_to_index.items():
-                        if not future.done():
-                            batch_size_error = len(thread_batches[index])
-                            all_results[index] = [f"Lỗi timeout tổng thể"] * batch_size_error
-                            total_processed += batch_size_error
-                            pbar.update(batch_size_error)
-                            logger.warning(f"⚠️ Thread {index} chưa hoàn thành, tạo kết quả mặc định")
-        
-        # Flatten results
-        final_results = []
-        for batch_results in all_results:
-            if batch_results:
-                final_results.extend(batch_results)
-        
-        # Validation
-        if len(final_results) != total_items:
-            logger.warning(f"⚠️ Số lượng kết quả không khớp: {len(final_results)} vs {total_items}")
-            # Pad with error messages if needed
-            while len(final_results) < total_items:
-                final_results.append("Lỗi: thiếu kết quả")
-        
-        # Final summary
-        elapsed = time.time() - start_time
-        rate = total_processed / elapsed if elapsed > 0 else 0
-        logger.info(f"🎉 Parallel processing hoàn thành: {total_processed}/{total_items} trong {elapsed:.1f}s ({rate:.2f} items/s)")
-        
-        return final_results
+            logger.info(f"✅ Async processing completed: {len(results)} results")
+            return results
+            
+        finally:
+            loop.close()
         
     except Exception as e:
-        logger.error(f"❌ Lỗi parallel processing: {str(e)}")
-        logger.info("🔄 Fallback về batch processing")
+        logger.error(f"❌ Async processing failed: {str(e)}")
+        logger.debug(traceback.format_exc())
+        logger.info("🔄 Fallback to batch processing")
         return process_data_batch_only(model, data, column_names, prompt, is_multicolumn)
 
+def process_data_parallel(model, data, column_names, prompt, is_multicolumn=False):
+    """Xử lý dữ liệu với parallel processing (DEPRECATED - sử dụng async thay thế)"""
+    logger.warning("⚠️ process_data_parallel is deprecated, using async processing instead")
+    return process_data_with_async(model, data, column_names, prompt, is_multicolumn)
+
 def process_data_batch_only(model, data, column_names, prompt, is_multicolumn=False):
-    """Xử lý dữ liệu chỉ với batch processing (không parallel)"""
+    """Xử lý dữ liệu chỉ với batch processing (không parallel/async)"""
     try:
         total_items = len(data)
         batch_size = BATCH_SIZE
@@ -908,15 +907,35 @@ def get_processing_stats(df, result_column):
         }
     
     total = len(df)
-    processed = len(df[df[result_column].notna() & (df[result_column] != "")])
-    errors = len(df[df[result_column].str.contains("Lỗi", na=False)])
-    remaining = total - processed
+    
+    # Tìm tất cả error patterns
+    error_patterns = [
+        "Lỗi",           # Vietnamese error
+        "Batch error",   # Async batch error
+        "failed after",  # Batch failed after X attempts
+        "HTTP 429",      # Rate limit error
+        "Timeout",       # Timeout error
+        "Connection error"  # Connection error
+    ]
+    
+    # Tạo mask cho errors
+    error_mask = pd.Series([False] * len(df))
+    for pattern in error_patterns:
+        pattern_mask = df[result_column].astype(str).str.contains(pattern, case=False, na=False)
+        error_mask = error_mask | pattern_mask
+    
+    errors = error_mask.sum()
+    
+    # Processed = có data và không phải error
+    has_data_mask = df[result_column].notna() & (df[result_column] != "")
+    processed = (has_data_mask & ~error_mask).sum()
+    remaining = total - has_data_mask.sum()  # Chưa có data gì cả
     
     return {
         'total': total,
-        'processed': processed,
-        'remaining': remaining,
-        'errors': errors
+        'processed': processed,  # Thành công thực sự
+        'remaining': remaining,  # Chưa xử lý
+        'errors': errors        # Có lỗi
     }
 
 def apply_fine_tuned_prompt_context(text, prompt, context_template):

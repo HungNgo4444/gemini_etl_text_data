@@ -14,6 +14,7 @@ from utils import (
     process_batch_with_ai,
     process_multicolumn_batch_with_ai,
     process_data_parallel,
+    process_data_with_async,
     process_data_batch_only,
     generate_output_filename,
     generate_checkpoint_filename,
@@ -30,8 +31,12 @@ from config import (
     ENABLE_BATCH_PROCESSING,
     BATCH_SIZE,
     ENABLE_PARALLEL_PROCESSING,
+    ENABLE_ASYNC_PROCESSING,
     MAX_CONCURRENT_THREADS,
-    THREAD_BATCH_SIZE
+    THREAD_BATCH_SIZE,
+    MAX_CONCURRENT_REQUESTS,
+    ASYNC_RATE_LIMIT_RPM,
+    ASYNC_CHUNK_SIZE
 )
 
 class AIDataProcessor:
@@ -132,15 +137,22 @@ class AIDataProcessor:
         stats = get_processing_stats(self.df, AI_RESULT_COLUMN)
         self.stats['start_time'] = time.time()
         
-        # Xác định chế độ xử lý
-        is_parallel_mode = ENABLE_PARALLEL_PROCESSING and stats['remaining'] > MAX_CONCURRENT_THREADS
-        is_batch_mode = ENABLE_BATCH_PROCESSING and stats['remaining'] > 1
+        # Xác định chế độ xử lý - ưu tiên async processing
+        is_async_mode = ENABLE_ASYNC_PROCESSING and stats['remaining'] > 10
+        is_parallel_mode = ENABLE_PARALLEL_PROCESSING and stats['remaining'] > MAX_CONCURRENT_THREADS and not is_async_mode
+        is_batch_mode = ENABLE_BATCH_PROCESSING and stats['remaining'] > 1 and not is_async_mode and not is_parallel_mode
         
         print(f"🎯 Sẽ xử lý {stats['remaining']} records")
         
         # Hiển thị chế độ xử lý
-        if is_parallel_mode:
-            print(f"🚀 Chế độ: Parallel + Batch Processing")
+        if is_async_mode:
+            print(f"🚀 Chế độ: Async Processing (SEMAPHORE + RATE LIMITER)")
+            print(f"⚡ Max concurrent: {MAX_CONCURRENT_REQUESTS}")
+            print(f"📊 Rate limit: {ASYNC_RATE_LIMIT_RPM} RPM")
+            print(f"📦 Chunk size: {ASYNC_CHUNK_SIZE}")
+            estimated_time_saving = "50-100x faster"
+        elif is_parallel_mode:
+            print(f"🚀 Chế độ: Parallel + Batch Processing (LEGACY)")
             print(f"🧵 Threads: {MAX_CONCURRENT_THREADS}")
             print(f"📦 Thread batch size: {THREAD_BATCH_SIZE}")
             estimated_time_saving = "15-30x faster"
@@ -157,7 +169,9 @@ class AIDataProcessor:
         print("-" * 50)
         
         try:
-            if is_parallel_mode:
+            if is_async_mode:
+                return self._process_with_parallel()  # Sử dụng lại function này nhưng đã được cập nhật cho async
+            elif is_parallel_mode:
                 return self._process_with_parallel()
             elif is_batch_mode:
                 return self._process_with_batch()
@@ -180,10 +194,10 @@ class AIDataProcessor:
             return False
     
     def _process_with_parallel(self):
-        """Xử lý dữ liệu với parallel processing"""
-        print("🚀 Khởi động Parallel Processing...")
+        """Xử lý dữ liệu với Async Processing (thay thế parallel processing)"""
+        print("🚀 Khởi động Async Processing...")
         
-        # Chuẩn bị dữ liệu cho parallel processing
+        # Chuẩn bị dữ liệu cho async processing
         unprocessed_data = []
         unprocessed_indices = []
         
@@ -223,11 +237,11 @@ class AIDataProcessor:
             print("✅ Không có dữ liệu cần xử lý")
             return True
         
-        print(f"📊 Chuẩn bị xử lý {len(unprocessed_data)} items với parallel processing")
+        print(f"📊 Chuẩn bị xử lý {len(unprocessed_data)} items với async processing")
         
-        # Gọi parallel processing
+        # Gọi async processing (thay thế process_data_parallel)
         try:
-            results = process_data_parallel(
+            results = process_data_with_async(
                 self.model,
                 unprocessed_data,
                 self.config.get('selected_columns', []),
@@ -246,12 +260,12 @@ class AIDataProcessor:
             if self.config['use_checkpoint'] and self.checkpoint_file:
                 save_checkpoint(self.df, self.checkpoint_file)
             
-            print(f"✅ Parallel processing hoàn thành: {len(results)} kết quả")
+            print(f"✅ Async processing hoàn thành: {len(results)} kết quả")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Lỗi parallel processing: {str(e)}")
-            print(f"⚠️ Parallel processing thất bại, fallback về batch processing")
+            logger.error(f"❌ Lỗi async processing: {str(e)}")
+            print(f"⚠️ Async processing thất bại, fallback về batch processing")
             
             # Fallback về batch processing
             return self._process_with_batch_fallback(unprocessed_data, unprocessed_indices)
