@@ -723,8 +723,8 @@ def process_parallel_batch_worker(thread_id, model, batch_data, column_names, pr
         
         return results
 
-def process_data_with_async(model, data, column_names, prompt, is_multicolumn=False):
-    """Xử lý dữ liệu với Async Processing (thay thế parallel processing)"""
+def process_data_with_async(model, data, column_names, prompt, is_multicolumn=False, checkpoint_callback=None, checkpoint_interval=None):
+    """Xử lý dữ liệu với Async Processing (thay thế parallel processing) với checkpoint support"""
     # Import config tại runtime để tránh lỗi circular import
     try:
         from config import ENABLE_ASYNC_PROCESSING
@@ -774,7 +774,7 @@ def process_data_with_async(model, data, column_names, prompt, is_multicolumn=Fa
             else:
                 data_for_async = list(data)
         
-        # Run async processing
+        # Run async processing với checkpoint support
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
@@ -787,7 +787,9 @@ def process_data_with_async(model, data, column_names, prompt, is_multicolumn=Fa
                     data=data_for_async,
                     prompt_template=prompt,
                     is_multicolumn=is_multicolumn,
-                    column_names=column_names
+                    column_names=column_names,
+                    checkpoint_callback=checkpoint_callback,
+                    checkpoint_interval=checkpoint_interval
                 )
             )
             
@@ -990,4 +992,178 @@ def load_fine_tuned_models():
             return {}
     except Exception as e:
         logger.warning(f"⚠️ Không thể load fine-tuned models: {str(e)}")
-        return {} 
+        return {}
+
+def check_and_retry_failed_rows(df, result_column, model, column_names, prompt, is_multicolumn=False, max_retry_attempts=2):
+    """
+    Kiểm tra và xử lý lại các row bị lỗi trước khi hoàn thành ETL
+    
+    Args:
+        df: DataFrame chứa dữ liệu
+        result_column: Tên cột chứa kết quả AI
+        model: AI model đã khởi tạo
+        column_names: Danh sách tên cột (cho multicolumn) hoặc tên cột message
+        prompt: Prompt template
+        is_multicolumn: True nếu xử lý nhiều cột
+        max_retry_attempts: Số lần retry tối đa
+        
+    Returns:
+        dict: Thống kê kết quả retry
+    """
+    logger.info("🔍 Kiểm tra các row bị lỗi...")
+    
+    # Tìm tất cả error patterns
+    error_patterns = [
+        "Lỗi",           # Vietnamese error
+        "Batch error",   # Async batch error  
+        "failed after",  # Batch failed after X attempts
+        "HTTP 429",      # Rate limit error
+        "Timeout",       # Timeout error
+        "Connection error",  # Connection error
+        "Rate limit",    # Rate limit variations
+        "Request failed", # Request failed
+        "API error",     # API error
+        "Exception",     # General exception
+        "Error:",        # Error with colon
+        "❌"            # Error emoji
+    ]
+    
+    # Tạo mask cho errors
+    error_mask = pd.Series([False] * len(df))
+    for pattern in error_patterns:
+        pattern_mask = df[result_column].astype(str).str.contains(pattern, case=False, na=False)
+        error_mask = error_mask | pattern_mask
+    
+    # Tìm các row có lỗi
+    error_indices = df[error_mask].index.tolist()
+    
+    if not error_indices:
+        logger.info("✅ Không có row nào bị lỗi!")
+        return {
+            'total_errors': 0,
+            'retry_attempted': 0,
+            'retry_success': 0,
+            'retry_failed': 0
+        }
+    
+    logger.info(f"🔥 Tìm thấy {len(error_indices)} row bị lỗi, bắt đầu retry...")
+    
+    retry_stats = {
+        'total_errors': len(error_indices),
+        'retry_attempted': 0,
+        'retry_success': 0,
+        'retry_failed': 0
+    }
+    
+    # Progress bar cho retry process
+    with tqdm(error_indices, desc="🔄 Retry Failed Rows", ncols=100) as pbar:
+        for idx in pbar:
+            try:
+                retry_stats['retry_attempted'] += 1
+                
+                # Lấy thông tin row hiện tại
+                current_error = str(df.at[idx, result_column])
+                pbar.set_description(f"🔄 Retry row {idx} (Error: {current_error[:30]}...)")
+                
+                success = False
+                
+                # Thử retry với delay tăng dần
+                for attempt in range(max_retry_attempts):
+                    try:
+                        # Delay tăng dần: 2s, 5s, 10s
+                        if attempt > 0:
+                            delay = 2 * (attempt + 1)
+                            logger.debug(f"⏳ Waiting {delay}s before retry attempt {attempt + 1}")
+                            time.sleep(delay)
+                        
+                        # Xử lý lại row này
+                        if is_multicolumn:
+                            # Multi-column mode
+                            row_data = {}
+                            has_data = False
+                            
+                            for col in column_names:
+                                if col in df.columns:
+                                    value = df.at[idx, col]
+                                    row_data[col] = value
+                                    if pd.notna(value) and str(value).strip():
+                                        has_data = True
+                            
+                            if not has_data:
+                                df.at[idx, result_column] = "Không có dữ liệu"
+                                success = True
+                                break
+                            
+                            # Xử lý với AI multi-column
+                            result = process_multicolumn_with_ai(
+                                model,
+                                row_data,
+                                column_names,
+                                prompt,
+                                max_retries=1  # Giảm retry trong function để tránh nested retry
+                            )
+                        else:
+                            # Single column mode
+                            message_col = column_names if isinstance(column_names, str) else column_names[0]
+                            
+                            if pd.isna(df.at[idx, message_col]):
+                                df.at[idx, result_column] = "Không có dữ liệu"
+                                success = True
+                                break
+                            
+                            # Lấy và làm sạch text
+                            text = clean_text(df.at[idx, message_col])
+                            
+                            if not text:
+                                df.at[idx, result_column] = "Không có dữ liệu"
+                                success = True
+                                break
+                            
+                            # Xử lý với AI
+                            result = process_text_with_ai(
+                                model, 
+                                text, 
+                                prompt,
+                                max_retries=1  # Giảm retry trong function
+                            )
+                        
+                        # Kiểm tra kết quả có phải error không
+                        if result and not any(pattern.lower() in str(result).lower() for pattern in error_patterns):
+                            df.at[idx, result_column] = result
+                            success = True
+                            logger.debug(f"✅ Row {idx} retry success")
+                            break
+                        else:
+                            logger.debug(f"⚠️ Row {idx} retry attempt {attempt + 1} still failed: {str(result)[:50]}...")
+                            
+                    except Exception as retry_error:
+                        logger.debug(f"❌ Row {idx} retry attempt {attempt + 1} exception: {str(retry_error)}")
+                        continue
+                
+                # Cập nhật stats
+                if success:
+                    retry_stats['retry_success'] += 1
+                    pbar.set_description(f"✅ Row {idx} retry success")
+                else:
+                    retry_stats['retry_failed'] += 1
+                    # Giữ nguyên error message cũ hoặc cập nhật
+                    df.at[idx, result_column] = f"Retry failed: {current_error}"
+                    pbar.set_description(f"❌ Row {idx} retry failed")
+                
+            except Exception as e:
+                retry_stats['retry_failed'] += 1
+                logger.error(f"💥 Unexpected error retrying row {idx}: {str(e)}")
+                pbar.set_description(f"💥 Row {idx} unexpected error")
+    
+    # Log kết quả retry
+    logger.info(f"🎯 Retry Results:")
+    logger.info(f"   - Total errors found: {retry_stats['total_errors']}")
+    logger.info(f"   - Retry attempted: {retry_stats['retry_attempted']}")
+    logger.info(f"   - Retry success: {retry_stats['retry_success']}")
+    logger.info(f"   - Retry failed: {retry_stats['retry_failed']}")
+    
+    if retry_stats['retry_success'] > 0:
+        success_rate = (retry_stats['retry_success'] / retry_stats['retry_attempted']) * 100
+        logger.info(f"   - Retry success rate: {success_rate:.1f}%")
+    
+    return retry_stats 

@@ -330,39 +330,127 @@ class AsyncAPIClient:
         )
     
     def _parse_batch_response(self, response_text: str, expected_count: int) -> List[str]:
-        """Parse batch response thành list results"""
+        """Parse batch response thành list results với improved reliability"""
         
         try:
-            # Tìm pattern "Item X: [result]"
-            import re
-            pattern = r'Item\s+(\d+):\s*(.+?)(?=Item\s+\d+:|$)'
-            matches = re.findall(pattern, response_text, re.DOTALL | re.IGNORECASE)
+            # Clean response text
+            response_text = response_text.strip()
+            if not response_text:
+                logger.warning("⚠️ Empty response text received")
+                return ["Empty response"] * expected_count
             
-            if matches:
-                # Sort theo item number và extract results
-                sorted_matches = sorted(matches, key=lambda x: int(x[0]))
-                results = [match[1].strip() for match in sorted_matches]
+            # Method 1: Tìm pattern "Item X: [result]" với improved regex
+            import re
+            
+            # Try multiple patterns to handle various AI response formats
+            patterns = [
+                r'Item\s+(\d+):\s*(.+?)(?=\n\s*Item\s+\d+:|$)',  # Standard format with newline
+                r'Item\s+(\d+):\s*(.+?)(?=Item\s+\d+:|$)',       # Standard format
+                r'(\d+)\.\s*(.+?)(?=\n\s*\d+\.|$)',             # Numbered list format
+                r'Item\s*(\d+)\s*[:\-]\s*(.+?)(?=Item\s*\d+|$)', # Flexible separators
+            ]
+            
+            results = []
+            for pattern in patterns:
+                matches = re.findall(pattern, response_text, re.DOTALL | re.IGNORECASE | re.MULTILINE)
                 
-                # Đảm bảo có đủ results
-                while len(results) < expected_count:
-                    results.append("Không tìm thấy kết quả")
+                if matches and len(matches) >= expected_count * 0.7:  # At least 70% matches
+                    # Sort theo item number và extract results
+                    try:
+                        sorted_matches = sorted(matches, key=lambda x: int(x[0]))
+                        results = [match[1].strip() for match in sorted_matches]
+                        
+                        # Clean results - remove common prefixes/suffixes
+                        cleaned_results = []
+                        for result in results:
+                            # Remove common AI response artifacts
+                            result = re.sub(r'^(Kết quả|Result):\s*', '', result, flags=re.IGNORECASE)
+                            result = re.sub(r'\s*$', '', result)  # Remove trailing whitespace
+                            if result:  # Only add non-empty results
+                                cleaned_results.append(result)
+                        
+                        results = cleaned_results
+                        logger.debug(f"✅ Parsed {len(results)} results using pattern: {pattern[:30]}...")
+                        break
+                        
+                    except (ValueError, IndexError) as e:
+                        logger.debug(f"⚠️ Pattern {pattern[:20]}... failed: {str(e)}")
+                        continue
+            
+            # Method 2: Fallback - Split by common delimiters
+            if not results or len(results) < expected_count * 0.5:
+                logger.debug("🔄 Using fallback parsing method...")
                 
-                return results[:expected_count]
-            else:
-                # Fallback: chia response theo lines
-                lines = [line.strip() for line in response_text.split('\n') if line.strip()]
-                if len(lines) >= expected_count:
-                    return lines[:expected_count]
+                # Try splitting by various delimiters
+                delimiters = ['\n\n', '\n---', '\n-', '\n•', '\n*', '\n']
+                
+                for delimiter in delimiters:
+                    lines = [line.strip() for line in response_text.split(delimiter) if line.strip()]
+                    
+                    # Filter out obvious non-result lines
+                    filtered_lines = []
+                    for line in lines:
+                        # Skip lines that look like headers, instructions, etc.
+                        if not re.match(r'^(Kết quả|Result|Item|Hãy|Please|Note)', line, re.IGNORECASE):
+                            if len(line) > 5:  # Skip very short lines
+                                filtered_lines.append(line)
+                    
+                    if len(filtered_lines) >= expected_count * 0.5:
+                        results = filtered_lines[:expected_count]
+                        logger.debug(f"✅ Fallback parsing found {len(results)} results")
+                        break
+            
+            # Method 3: Last resort - intelligent splitting
+            if not results:
+                logger.warning("⚠️ Using last resort parsing...")
+                
+                # Remove common prefixes and split intelligently
+                cleaned_text = re.sub(r'^.*?(?:Kết quả|Result):\s*', '', response_text, flags=re.IGNORECASE | re.DOTALL)
+                
+                # Try to split by sentence boundaries that might separate results
+                sentences = re.split(r'[.!?]\s+(?=[A-ZÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ])', cleaned_text)
+                
+                if len(sentences) >= expected_count:
+                    results = [s.strip() for s in sentences[:expected_count]]
                 else:
-                    # Pad với empty results
-                    padded_results = lines + ["Không tìm thấy kết quả"] * (expected_count - len(lines))
-                    return padded_results[:expected_count]
+                    # Split the text evenly
+                    text_length = len(cleaned_text)
+                    chunk_size = max(1, text_length // expected_count)
+                    results = []
+                    
+                    for i in range(expected_count):
+                        start = i * chunk_size
+                        end = min((i + 1) * chunk_size, text_length)
+                        chunk = cleaned_text[start:end].strip()
+                        if chunk:
+                            results.append(chunk)
+                        else:
+                            results.append("Không thể parse kết quả")
+            
+            # Final validation and padding
+            if len(results) < expected_count:
+                padding_needed = expected_count - len(results)
+                logger.warning(f"⚠️ Padding {padding_needed} missing results")
+                results.extend([f"Không tìm thấy kết quả {len(results)+j+1}" for j in range(padding_needed)])
+            elif len(results) > expected_count:
+                logger.warning(f"⚠️ Trimming {len(results) - expected_count} excess results")
+                results = results[:expected_count]
+            
+            # Quality check
+            valid_results = [r for r in results if r and len(r.strip()) > 0]
+            if len(valid_results) < expected_count * 0.3:  # Less than 30% valid results
+                logger.warning(f"⚠️ Low quality batch parsing: {len(valid_results)}/{expected_count} valid results")
+            
+            logger.debug(f"✅ Final batch parsing: {len(results)} results, {len(valid_results)} valid")
+            return results
                     
         except Exception as e:
-            logger.warning(f"⚠️ Batch parsing error: {str(e)}, fallback to split")
-            # Fallback: chia đều response text
-            fallback_result = response_text.strip()
-            return [fallback_result] * expected_count
+            logger.error(f"❌ Batch parsing error: {str(e)}, using emergency fallback")
+            logger.debug(traceback.format_exc())
+            
+            # Emergency fallback: return the full response for each item with a note
+            emergency_result = f"Parse error - Full response: {response_text[:200]}..."
+            return [emergency_result] * expected_count
 
 class AsyncDataProcessor:
     """Main async data processor"""
@@ -444,6 +532,8 @@ Kết quả:"""
         
         # Tạo tasks cho từng batch
         tasks = []
+        batch_metadata = []  # Track batch info for proper ordering
+        
         for batch_idx, batch in enumerate(batches):
             if ASYNC_BATCH_SIZE == 1:
                 # Single item processing
@@ -452,56 +542,105 @@ Kết quả:"""
                     item_id = f"batch_{batch_idx}_item_{item_idx}"
                     task = self.api_client.process_single_request(prompt, item_id)
                     tasks.append(task)
+                    batch_metadata.append({
+                        'type': 'single',
+                        'batch_idx': batch_idx,
+                        'item_idx': item_idx,
+                        'expected_count': 1
+                    })
             else:
                 # True batch processing - gửi nhiều items trong 1 request
                 batch_prompt = self._prepare_batch_prompt(batch, prompt_template, is_multicolumn, column_names)
                 batch_id = f"batch_{batch_idx}"
                 task = self.api_client.process_batch_request(batch_prompt, batch_id, len(batch))
                 tasks.append(task)
+                batch_metadata.append({
+                    'type': 'batch',
+                    'batch_idx': batch_idx,
+                    'expected_count': len(batch)
+                })
         
-        # Chạy tất cả tasks đồng thời với progress bar
+        # 🔥 FIX: Sử dụng asyncio.gather() thay vì as_completed() để đảm bảo thứ tự
         total_expected_results = len(items)
-        with tqdm(total=total_expected_results, desc="🔄 Async Processing") as pbar:
+        logger.info(f"🚀 Starting {len(tasks)} async tasks...")
+        
+        try:
+            # Chạy tất cả tasks đồng thời và đảm bảo thứ tự
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results theo đúng thứ tự
             completed_results = []
             
-            # Sử dụng asyncio.as_completed để có progress real-time
-            for coro in asyncio.as_completed(tasks):
-                result = await coro
-                
-                if ASYNC_BATCH_SIZE == 1:
-                    # Single result
-                    completed_results.append(result)
-                    pbar.update(1)
+            for idx, (result, metadata) in enumerate(zip(results, batch_metadata)):
+                if isinstance(result, Exception):
+                    # Handle exception
+                    logger.error(f"❌ Task {idx} failed: {str(result)}")
+                    error_count = metadata['expected_count']
+                    error_results = [
+                        AsyncProcessingResult(success=False, result=f"Task error: {str(result)}")
+                        for _ in range(error_count)
+                    ]
+                    completed_results.extend(error_results)
                 else:
-                    # Batch result - cần parse thành multiple results
-                    if result.success and isinstance(result.result, list):
-                        completed_results.extend([
-                            AsyncProcessingResult(success=True, result=r) for r in result.result
-                        ])
-                        pbar.update(len(result.result))
+                    # Handle successful result
+                    if metadata['type'] == 'single':
+                        # Single result
+                        completed_results.append(result)
                     else:
-                        # Batch failed, tạo error results
-                        batch_size = ASYNC_BATCH_SIZE
-                        error_results = [
-                            AsyncProcessingResult(success=False, result=f"Batch error: {result.error}")
-                            for _ in range(batch_size)
-                        ]
-                        completed_results.extend(error_results)
-                        pbar.update(batch_size)
+                        # Batch result - cần parse thành multiple results
+                        if result.success and isinstance(result.result, list):
+                            batch_results = [
+                                AsyncProcessingResult(success=True, result=r) for r in result.result
+                            ]
+                            completed_results.extend(batch_results)
+                        else:
+                            # Batch failed, tạo error results
+                            error_count = metadata['expected_count']
+                            error_results = [
+                                AsyncProcessingResult(success=False, result=f"Batch error: {result.error}")
+                                for _ in range(error_count)
+                            ]
+                            completed_results.extend(error_results)
                 
                 # Log progress
                 if len(completed_results) % 50 == 0:
                     success_count = sum(1 for r in completed_results if r.success)
                     logger.info(f"📊 Progress: {len(completed_results)}/{total_expected_results} ({success_count} success)")
-        
-        return completed_results
+            
+            # Final validation
+            if len(completed_results) != total_expected_results:
+                logger.warning(f"⚠️ Result count mismatch: expected {total_expected_results}, got {len(completed_results)}")
+                # Pad or trim results to match expected count
+                if len(completed_results) < total_expected_results:
+                    padding_needed = total_expected_results - len(completed_results)
+                    padding_results = [
+                        AsyncProcessingResult(success=False, result="Missing result")
+                        for _ in range(padding_needed)
+                    ]
+                    completed_results.extend(padding_results)
+                else:
+                    completed_results = completed_results[:total_expected_results]
+            
+            logger.info(f"✅ Async batch processing completed: {len(completed_results)} results")
+            return completed_results
+            
+        except Exception as e:
+            logger.error(f"💥 Async batch processing failed: {str(e)}")
+            # Return error results for all items
+            error_results = [
+                AsyncProcessingResult(success=False, result=f"Batch processing error: {str(e)}")
+                for _ in range(total_expected_results)
+            ]
+            return error_results
     
     async def process_data_chunked(self,
                                  data: List[Any],
                                  prompt_template: str,
                                  is_multicolumn: bool = False,
-                                 column_names: List[str] = None) -> List[str]:
-        """Xử lý data theo chunks để tránh memory issues"""
+                                 column_names: List[str] = None,
+                                 checkpoint_callback=None,
+                                 checkpoint_interval: int = None) -> List[str]:
+        """Xử lý data theo chunks để tránh memory issues với checkpoint support"""
         
         total_items = len(data)
         chunk_size = ASYNC_CHUNK_SIZE
@@ -533,11 +672,30 @@ Kết quả:"""
                 logger.info(f"✅ Chunk {chunk_idx + 1} completed: {success_count}/{len(chunk)} success, "
                           f"avg time: {avg_time:.2f}s, total retries: {total_retries}")
                 
+                # 🔥 CHECKPOINT MECHANISM - Lưu tiến trình sau mỗi chunk
+                if checkpoint_callback and checkpoint_interval:
+                    processed_so_far = (chunk_idx + 1) * chunk_size
+                    if processed_so_far % checkpoint_interval == 0 or chunk_idx == len(chunks) - 1:
+                        try:
+                            # Gọi callback để lưu checkpoint với results hiện tại
+                            checkpoint_callback(all_results, chunk_idx + 1, len(chunks))
+                            logger.info(f"💾 Checkpoint saved after chunk {chunk_idx + 1}")
+                        except Exception as checkpoint_error:
+                            logger.warning(f"⚠️ Failed to save checkpoint: {checkpoint_error}")
+                
             except Exception as e:
                 logger.error(f"❌ Chunk {chunk_idx + 1} failed: {str(e)}")
                 # Tạo error results cho chunk này
                 error_results = [f"Lỗi chunk: {str(e)}"] * len(chunk)
                 all_results.extend(error_results)
+                
+                # Lưu checkpoint ngay cả khi có lỗi
+                if checkpoint_callback:
+                    try:
+                        checkpoint_callback(all_results, chunk_idx + 1, len(chunks))
+                        logger.info(f"💾 Emergency checkpoint saved after chunk {chunk_idx + 1} failure")
+                    except Exception as checkpoint_error:
+                        logger.warning(f"⚠️ Failed to save emergency checkpoint: {checkpoint_error}")
         
         logger.info(f"🎉 All chunks processed: {len(all_results)} total results")
         return all_results
@@ -549,18 +707,25 @@ async def process_data_async(api_provider: str,
                            data: List[Any],
                            prompt_template: str,
                            is_multicolumn: bool = False,
-                           column_names: List[str] = None) -> List[str]:
-    """Main entry point cho async processing"""
+                           column_names: List[str] = None,
+                           checkpoint_callback=None,
+                           checkpoint_interval: int = None) -> List[str]:
+    """Main entry point cho async processing với checkpoint support"""
     
     try:
         # Initialize client và processor
         api_client = AsyncAPIClient(api_provider, api_key, model_name)
         processor = AsyncDataProcessor(api_client)
         
-        # Process data
+        # Process data với checkpoint support
         start_time = time.time()
         results = await processor.process_data_chunked(
-            data, prompt_template, is_multicolumn, column_names
+            data, 
+            prompt_template, 
+            is_multicolumn, 
+            column_names,
+            checkpoint_callback=checkpoint_callback,
+            checkpoint_interval=checkpoint_interval
         )
         
         # Final summary

@@ -21,7 +21,8 @@ from utils import (
     clean_text,
     get_processing_stats,
     print_progress_summary,
-    logger
+    logger,
+    check_and_retry_failed_rows
 )
 
 from config import (
@@ -36,7 +37,9 @@ from config import (
     THREAD_BATCH_SIZE,
     MAX_CONCURRENT_REQUESTS,
     ASYNC_RATE_LIMIT_RPM,
-    ASYNC_CHUNK_SIZE
+    ASYNC_CHUNK_SIZE,
+    ENABLE_ERROR_RETRY,
+    ERROR_RETRY_MAX_ATTEMPTS
 )
 
 class AIDataProcessor:
@@ -239,14 +242,34 @@ class AIDataProcessor:
         
         print(f"📊 Chuẩn bị xử lý {len(unprocessed_data)} items với async processing")
         
-        # Gọi async processing (thay thế process_data_parallel)
+        # 🔥 TẠO CHECKPOINT CALLBACK FUNCTION
+        def async_checkpoint_callback(results_so_far, chunk_completed, total_chunks):
+            """Callback để lưu checkpoint trong quá trình async processing"""
+            try:
+                # Cập nhật kết quả vào DataFrame
+                for i, result in enumerate(results_so_far):
+                    if i < len(unprocessed_indices):
+                        idx = unprocessed_indices[i]
+                        self.df.at[idx, AI_RESULT_COLUMN] = result
+                        
+                # Lưu checkpoint
+                if self.config['use_checkpoint'] and self.checkpoint_file:
+                    save_checkpoint(self.df, self.checkpoint_file)
+                    logger.info(f"💾 Async checkpoint saved: chunk {chunk_completed}/{total_chunks}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error in async checkpoint callback: {e}")
+        
+        # Gọi async processing với checkpoint support
         try:
             results = process_data_with_async(
                 self.model,
                 unprocessed_data,
                 self.config.get('selected_columns', []),
                 self.config['prompt'],
-                self.config.get('multi_column_mode', False)
+                self.config.get('multi_column_mode', False),
+                checkpoint_callback=async_checkpoint_callback,
+                checkpoint_interval=CHECKPOINT_INTERVAL
             )
             
             # Lưu kết quả vào DataFrame
@@ -256,7 +279,7 @@ class AIDataProcessor:
                     self.df.at[idx, AI_RESULT_COLUMN] = result
                     self.stats['processed'] += 1
             
-            # Lưu checkpoint sau khi hoàn thành
+            # Lưu checkpoint cuối cùng
             if self.config['use_checkpoint'] and self.checkpoint_file:
                 save_checkpoint(self.df, self.checkpoint_file)
             
@@ -624,28 +647,88 @@ class AIDataProcessor:
         print(f"\n💾 LƯU KẾT QUẢ")
         print("="*50)
         
+        # BƯỚC MỚI: Kiểm tra và retry các row bị lỗi trước khi lưu
+        if ENABLE_ERROR_RETRY:
+            print("\n🔍 KIỂM TRA VÀ XỬ LÝ LẠI CÁC ROW BỊ LỖI...")
+            print("-"*50)
+            
+            try:
+                # Xác định thông số cho retry
+                if self.config.get('multi_column_mode', False):
+                    column_names = self.config['selected_columns']
+                    is_multicolumn = True
+                else:
+                    column_names = self.config['message_column']
+                    is_multicolumn = False
+                
+                # Chạy retry failed rows với config
+                retry_stats = check_and_retry_failed_rows(
+                    df=self.df,
+                    result_column=AI_RESULT_COLUMN,
+                    model=self.model,
+                    column_names=column_names,
+                    prompt=self.config['prompt'],
+                    is_multicolumn=is_multicolumn,
+                    max_retry_attempts=ERROR_RETRY_MAX_ATTEMPTS
+                )
+                
+                # Hiển thị kết quả retry
+                if retry_stats['total_errors'] > 0:
+                    print(f"\n📊 KẾT QUẢ RETRY:")
+                    print(f"   🔥 Tổng lỗi tìm thấy: {retry_stats['total_errors']}")
+                    print(f"   🔄 Đã thử retry: {retry_stats['retry_attempted']}")
+                    print(f"   ✅ Retry thành công: {retry_stats['retry_success']}")
+                    print(f"   ❌ Retry thất bại: {retry_stats['retry_failed']}")
+                    
+                    if retry_stats['retry_success'] > 0:
+                        success_rate = (retry_stats['retry_success'] / retry_stats['retry_attempted']) * 100
+                        print(f"   📈 Tỷ lệ retry thành công: {success_rate:.1f}%")
+                        
+                        # Cập nhật stats tổng
+                        self.stats['processed'] += retry_stats['retry_success']
+                        if retry_stats['retry_failed'] > retry_stats['retry_success']:
+                            self.stats['errors'] += (retry_stats['retry_failed'] - retry_stats['retry_success'])
+                        else:
+                            self.stats['errors'] = max(0, self.stats['errors'] - retry_stats['retry_success'])
+                else:
+                    print("✅ Không có row nào bị lỗi cần retry!")
+                    
+            except Exception as retry_error:
+                print(f"⚠️ Lỗi trong quá trình retry: {str(retry_error)}")
+                print("Tiếp tục lưu file với dữ liệu hiện tại...")
+        
+        print("\n💾 Lưu file kết quả...")
         success = save_data(self.df, self.output_file)
         
         if success:
             print(f"✅ Đã lưu kết quả: {Path(self.output_file).name}")
             
-            # Thống kê cuối cùng
+            # Thống kê cuối cùng (sau retry)
             final_stats = get_processing_stats(self.df, AI_RESULT_COLUMN)
-            print(f"📊 Thống kê cuối cùng:")
+            print(f"\n📊 THỐNG KÊ CUỐI CÙNG:")
             print(f"   - Tổng records: {final_stats['total']}")
-            print(f"   - Đã xử lý: {final_stats['processed']}")
-            print(f"   - Lỗi: {final_stats['errors']}")
-            print(f"   - Tỷ lệ thành công: {(final_stats['processed']-final_stats['errors'])/final_stats['total']*100:.1f}%")
+            print(f"   - Đã xử lý thành công: {final_stats['processed']}")
+            print(f"   - Còn lỗi: {final_stats['errors']}")
+            print(f"   - Chưa xử lý: {final_stats['remaining']}")
             
-            # Xóa checkpoint nếu hoàn thành
+            # Tính tỷ lệ thành công thực tế
+            actual_success = final_stats['processed']
+            total_records = final_stats['total']
+            success_rate = (actual_success / total_records * 100) if total_records > 0 else 0
+            print(f"   - Tỷ lệ thành công: {success_rate:.1f}%")
+            
+            # Xóa checkpoint nếu hoàn thành tốt
+            remaining_errors = final_stats['errors'] + final_stats['remaining']
             if (self.config['use_checkpoint'] and 
                 self.checkpoint_file and 
-                final_stats['remaining'] == 0):
+                remaining_errors == 0):  # Không còn lỗi và chưa xử lý
                 try:
                     Path(self.checkpoint_file).unlink(missing_ok=True)
-                    print("🗑️ Đã xóa checkpoint file")
+                    print("🗑️ Đã xóa checkpoint file (hoàn thành 100%)")
                 except:
                     pass
+            elif remaining_errors > 0:
+                print(f"💾 Giữ checkpoint file (còn {remaining_errors} records chưa hoàn thành)")
             
             return True
         else:

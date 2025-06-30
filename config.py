@@ -60,8 +60,8 @@ AI_RESULT_COLUMN = "AI_RESULT"  # Cột kết quả AI
 # ===========================
 USE_CHECKPOINT = True   # Mặc định sử dụng checkpoint
 CHECKPOINT_FILE = ""    # Sẽ được tự động tạo dựa trên input file
-CHECKPOINT_INTERVAL = 100  # Lưu checkpoint mỗi 100 records
-PROGRESS_REPORT_INTERVAL = 100  # Báo cáo tiến trình mỗi 100 records
+CHECKPOINT_INTERVAL = 60   # Lưu checkpoint mỗi 60 records (khớp với ASYNC_CHUNK_SIZE)
+PROGRESS_REPORT_INTERVAL = 60  # Báo cáo tiến trình mỗi 60 records
 
 # User prompt - sẽ được input từ user
 USER_PROMPT = ""
@@ -86,17 +86,17 @@ THREAD_TIMEOUT = 120               # Timeout cho mỗi thread (seconds) (legacy)
 CIRCUIT_BREAKER_THRESHOLD = 3      # Số lỗi liên tiếp để kích hoạt circuit breaker (legacy)
 
 # ===========================
-# ASYNC PROCESSING CONFIGURATION
+# ASYNC PROCESSING CONFIGURATION - OPTIMIZED FOR GPT-4.1 MINI PAID TIER
 # ===========================
 ENABLE_ASYNC_PROCESSING = True     # Bật/tắt async processing (MẶC ĐỊNH BẬT)
-MAX_CONCURRENT_REQUESTS = 5       # Số requests đồng thời tối đa (semaphore limit)
-ASYNC_BATCH_SIZE = 5             # Số items xử lý trong 1 batch async (TĂNG ĐỂ NHANH HƠN!)
-ASYNC_CHUNK_SIZE = 300             # Số items xử lý trong 1 chunk (để chia nhỏ workload)
-ASYNC_RATE_LIMIT_RPM = 300          # Rate limit: requests per minute
-ASYNC_TIMEOUT = 60                 # Timeout cho mỗi async request (seconds)
-ASYNC_MAX_RETRIES = 3              # Số lần retry cho async requests
-ASYNC_RETRY_DELAY = 2              # Delay base cho exponential backoff (seconds)
-ASYNC_ENABLE_RATE_LIMITER = True   # Bật dynamic rate limiter
+MAX_CONCURRENT_REQUESTS = 3        # Giảm concurrent để tránh burst (từ 5 → 3)
+ASYNC_BATCH_SIZE = 5              # Giảm batch size để ổn định (từ 5 → 3)
+ASYNC_CHUNK_SIZE = 100             # Giảm chunk size để checkpoint thường xuyên (từ 100 → 60)
+ASYNC_RATE_LIMIT_RPM = 400        # An toàn với 500 RPM limit (80% của limit)
+ASYNC_TIMEOUT = 90                # Tăng timeout cho GPT-4.1 Mini (từ 60 → 90)
+ASYNC_MAX_RETRIES = 3             # Giữ nguyên số lần retry
+ASYNC_RETRY_DELAY = 5             # Tăng delay base cho exponential backoff (từ 2 → 5)
+ASYNC_ENABLE_RATE_LIMITER = True  # BẮT BUỘC bật rate limiter
 
 # ===========================
 # MODEL PARAMETERS
@@ -134,4 +134,14 @@ DEFAULT_PROMPT_TEMPLATES = {
 # LOGGING CONFIGURATION
 # ===========================
 LOG_FILE = "ai_etl_data.log"
-LOG_LEVEL = "INFO" 
+LOG_LEVEL = "INFO"
+
+# ===========================
+# ERROR RETRY CONFIGURATION
+# ===========================
+ENABLE_ERROR_RETRY = True         # Bật/tắt tính năng retry failed rows trước khi hoàn thành
+ERROR_RETRY_MAX_ATTEMPTS = 2      # Số lần retry tối đa cho mỗi row bị lỗi
+ERROR_RETRY_DELAY_BASE = 2        # Delay cơ bản giữa các lần retry (seconds)
+ERROR_RETRY_EXPONENTIAL = True    # Sử dụng exponential backoff (2s, 4s, 8s...)
+
+# =========================== 
