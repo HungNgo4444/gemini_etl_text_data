@@ -148,7 +148,21 @@ class AsyncAPIClient:
         except (KeyError, IndexError) as e:
             raise ValueError(f"Không thể parse response: {e}")
     
-    async def process_single_request(self, prompt: str, item_id: Optional[str] = None) -> AsyncProcessingResult:
+    def _parse_response_with_json_support(self, response_text: str, use_json: bool = False) -> str:
+        """Parse response với JSON support"""
+        if not use_json:
+            return response_text.strip()
+        
+        try:
+            # Import JSON utilities động
+            from utils import parse_response_with_fallback
+            return parse_response_with_fallback(response_text, use_json=True)
+        except ImportError:
+            # Fallback nếu không import được utils
+            logger.warning("⚠️ Không thể import JSON utilities, sử dụng text parsing")
+            return response_text.strip()
+    
+    async def process_single_request(self, prompt: str, item_id: Optional[str] = None, use_json: bool = False) -> AsyncProcessingResult:
         """Xử lý một request đơn lẻ"""
         start_time = time.time()
         retry_count = 0
@@ -194,12 +208,15 @@ class AsyncAPIClient:
                             response_data = await response.json()
                             result_text = self._extract_response_text(response_data)
                             
+                            # Áp dụng JSON parsing nếu được yêu cầu
+                            parsed_result = self._parse_response_with_json_support(result_text, use_json)
+                            
                             processing_time = time.time() - start_time
                             logger.debug(f"✅ Success {item_id}: {processing_time:.2f}s, retries: {retry_count}")
                             
                             return AsyncProcessingResult(
                                 success=True,
-                                result=result_text.strip(),
+                                result=parsed_result,
                                 processing_time=processing_time,
                                 retry_count=retry_count
                             )
@@ -239,7 +256,7 @@ class AsyncAPIClient:
             retry_count=retry_count
         )
     
-    async def process_batch_request(self, batch_prompt: str, batch_id: str, expected_count: int) -> AsyncProcessingResult:
+    async def process_batch_request(self, batch_prompt: str, batch_id: str, expected_count: int, use_json: bool = False) -> AsyncProcessingResult:
         """Xử lý batch request - gửi nhiều items trong 1 API call"""
         
         start_time = time.time()
@@ -519,7 +536,8 @@ Kết quả:"""
                                 items: List[Any], 
                                 prompt_template: str,
                                 is_multicolumn: bool = False,
-                                column_names: List[str] = None) -> List[AsyncProcessingResult]:
+                                column_names: List[str] = None,
+                                use_json: bool = False) -> List[AsyncProcessingResult]:
         """Xử lý batch items với async - SỬ DỤNG ASYNC_BATCH_SIZE"""
         
         logger.info(f"🚀 Starting async batch processing: {len(items)} items với batch size {ASYNC_BATCH_SIZE}")
@@ -540,7 +558,7 @@ Kết quả:"""
                 for item_idx, item in enumerate(batch):
                     prompt = self._prepare_prompt(item, prompt_template, is_multicolumn, column_names)
                     item_id = f"batch_{batch_idx}_item_{item_idx}"
-                    task = self.api_client.process_single_request(prompt, item_id)
+                    task = self.api_client.process_single_request(prompt, item_id, use_json)
                     tasks.append(task)
                     batch_metadata.append({
                         'type': 'single',
@@ -552,7 +570,7 @@ Kết quả:"""
                 # True batch processing - gửi nhiều items trong 1 request
                 batch_prompt = self._prepare_batch_prompt(batch, prompt_template, is_multicolumn, column_names)
                 batch_id = f"batch_{batch_idx}"
-                task = self.api_client.process_batch_request(batch_prompt, batch_id, len(batch))
+                task = self.api_client.process_batch_request(batch_prompt, batch_id, len(batch), use_json)
                 tasks.append(task)
                 batch_metadata.append({
                     'type': 'batch',
@@ -639,7 +657,8 @@ Kết quả:"""
                                  is_multicolumn: bool = False,
                                  column_names: List[str] = None,
                                  checkpoint_callback=None,
-                                 checkpoint_interval: int = None) -> List[str]:
+                                 checkpoint_interval: int = None,
+                                 use_json: bool = False) -> List[str]:
         """Xử lý data theo chunks để tránh memory issues với checkpoint support"""
         
         total_items = len(data)
@@ -657,7 +676,7 @@ Kết quả:"""
             try:
                 # Xử lý chunk
                 chunk_results = await self.process_batch_async(
-                    chunk, prompt_template, is_multicolumn, column_names
+                    chunk, prompt_template, is_multicolumn, column_names, use_json
                 )
                 
                 # Extract results
@@ -709,7 +728,8 @@ async def process_data_async(api_provider: str,
                            is_multicolumn: bool = False,
                            column_names: List[str] = None,
                            checkpoint_callback=None,
-                           checkpoint_interval: int = None) -> List[str]:
+                           checkpoint_interval: int = None,
+                           use_json: bool = False) -> List[str]:
     """Main entry point cho async processing với checkpoint support"""
     
     try:
@@ -725,7 +745,8 @@ async def process_data_async(api_provider: str,
             is_multicolumn, 
             column_names,
             checkpoint_callback=checkpoint_callback,
-            checkpoint_interval=checkpoint_interval
+            checkpoint_interval=checkpoint_interval,
+            use_json=use_json
         )
         
         # Final summary

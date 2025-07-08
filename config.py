@@ -127,7 +127,22 @@ DEFAULT_PROMPT_TEMPLATES = {
     "sentiment": "Hãy phân tích cảm xúc (tích cực/tiêu cực/trung tính) của nội dung sau:",
     "extract_keywords": "Hãy trích xuất các từ khóa quan trọng từ nội dung sau:",
     "translate": "Hãy dịch nội dung sau sang tiếng Việt:",
-    "custom": "Hãy xử lý nội dung sau theo yêu cầu:"
+    "custom": "Hãy xử lý nội dung sau theo yêu cầu:",
+    "json_classify": """Bạn là một hệ thống phân loại dữ liệu. Hãy phân tích nội dung và trả về kết quả theo định dạng JSON chính xác như sau:
+
+{
+    "category": "string hoặc null", 
+    "product": "string hoặc null",
+    "service": "string hoặc null", 
+    "tag": "string hoặc null",
+    "note_1": "string hoặc null"
+}
+
+QUY TẮC QUAN TRỌNG:
+- Chỉ trả về JSON object duy nhất, không có text khác
+- Sử dụng null cho các trường không tìm thấy thông tin
+- Đảm bảo JSON syntax chính xác với double quotes
+- Không sử dụng comments trong JSON"""
 }
 
 # ===========================
@@ -143,5 +158,26 @@ ENABLE_ERROR_RETRY = True         # Bật/tắt tính năng retry failed rows tr
 ERROR_RETRY_MAX_ATTEMPTS = 2      # Số lần retry tối đa cho mỗi row bị lỗi
 ERROR_RETRY_DELAY_BASE = 2        # Delay cơ bản giữa các lần retry (seconds)
 ERROR_RETRY_EXPONENTIAL = True    # Sử dụng exponential backoff (2s, 4s, 8s...)
+
+# ===========================
+# JSON OUTPUT CONFIGURATION
+# ===========================
+ENABLE_JSON_OUTPUT = False  # Sẽ được input từ user
+JSON_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "category": {"type": ["string", "null"]},
+        "product": {"type": ["string", "null"]}, 
+        "service": {"type": ["string", "null"]},
+        "tag": {"type": ["string", "null"]},
+        "note_1": {"type": ["string", "null"]}
+    },
+    "required": ["category", "product", "service", "tag", "note_1"]
+}
+
+# JSON Parsing configuration
+JSON_PARSE_FALLBACK_TO_TEXT = True  # Fallback về text parsing nếu JSON thất bại
+JSON_VALIDATE_SCHEMA = True         # Validate JSON schema
+JSON_REPAIR_MALFORMED = True        # Thử sửa JSON bị lỗi format
 
 # =========================== 

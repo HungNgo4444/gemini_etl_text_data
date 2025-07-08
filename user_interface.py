@@ -350,15 +350,41 @@ def get_user_input():
         else:
             print("❌ Vui lòng nhập 'y' hoặc 'n'")
     
-    # 7. Nhập prompt
-    print("\n✍️ BƯỚC 7: Cấu hình prompt AI")
+    # 7. Chọn output format  
+    print("\n📄 BƯỚC 7: Chọn định dạng output")
     print("-" * 40)
     
-    # Hiển thị các template có sẵn
+    while True:
+        print("Chọn định dạng output:")
+        print("  1. Text format (truyền thống) - Compatible với tất cả prompts")
+        print("  2. JSON format (structured) - Chính xác hơn, dễ parse")
+        
+        format_choice = input("\nChọn format (1 hoặc 2) [1]: ").strip()
+        
+        if format_choice in ['', '1']:
+            user_config['use_json_output'] = False
+            print("✅ Sẽ sử dụng text format")
+            break
+        elif format_choice == '2':
+            user_config['use_json_output'] = True
+            print("✅ Sẽ sử dụng JSON format") 
+            print("💡 JSON format yêu cầu prompt phù hợp hoặc sử dụng template json_classify")
+            break
+        else:
+            print("❌ Vui lòng chọn 1 hoặc 2")
+
+    # 8. Nhập prompt
+    print("\n✍️ BƯỚC 8: Cấu hình prompt AI")
+    print("-" * 40)
+    
+    # Hiển thị các template có sẵn, highlight JSON template nếu chọn JSON
     print("Các template prompt có sẵn:")
     template_keys = list(DEFAULT_PROMPT_TEMPLATES.keys())
     for i, key in enumerate(template_keys, 1):
-        print(f"  {i}. {key}: {DEFAULT_PROMPT_TEMPLATES[key]}")
+        if key == 'json_classify' and user_config['use_json_output']:
+            print(f"  {i}. {key}: {DEFAULT_PROMPT_TEMPLATES[key][:50]}... 🌟 RECOMMENDED cho JSON")
+        else:
+            print(f"  {i}. {key}: {DEFAULT_PROMPT_TEMPLATES[key][:50]}...")
     
     print(f"  {len(template_keys) + 1}. Đọc prompt từ file (.txt)")
     print(f"  {len(template_keys) + 2}. Tự nhập prompt")
@@ -405,8 +431,8 @@ def get_user_input():
         except ValueError:
             print("❌ Vui lòng nhập số hợp lệ!")
     
-    # 8. Tổng kết
-    print("\n📋 BƯỚC 8: Tổng kết cấu hình")
+    # 9. Tổng kết
+    print("\n📋 BƯỚC 9: Tổng kết cấu hình")
     print("="*60)
     api_name = "Gemini" if user_config['api_provider'] == 'gemini' else "OpenAI"
     print(f"🔧 API Provider: {api_name}")
@@ -421,6 +447,8 @@ def get_user_input():
         print(f"📊 Cột xử lý: {user_config['message_column']}")
     
     print(f"💾 Checkpoint: {'Có' if user_config['use_checkpoint'] else 'Không'}")
+    output_format = "JSON" if user_config.get('use_json_output', False) else "Text"
+    print(f"📄 Output format: {output_format}")
     print(f"✍️ Prompt: {user_config['prompt'][:100]}...")
     
     while True:

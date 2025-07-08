@@ -4,10 +4,13 @@ import os
 import time
 import logging
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 import google.generativeai as genai
 import asyncio
+import jsonschema
+from jsonschema import validate, ValidationError
 
 # Import async processor
 try:
@@ -42,7 +45,11 @@ from config import (
     GEMINI_API_KEY,
     GEMINI_MODEL_NAME,
     OPENAI_API_KEY,
-    OPENAI_MODEL_NAME
+    OPENAI_MODEL_NAME,
+    JSON_OUTPUT_SCHEMA,
+    JSON_VALIDATE_SCHEMA,
+    JSON_REPAIR_MALFORMED,
+    JSON_PARSE_FALLBACK_TO_TEXT
 )
 
 def check_openai_availability():
@@ -723,7 +730,7 @@ def process_parallel_batch_worker(thread_id, model, batch_data, column_names, pr
         
         return results
 
-def process_data_with_async(model, data, column_names, prompt, is_multicolumn=False, checkpoint_callback=None, checkpoint_interval=None):
+def process_data_with_async(model, data, column_names, prompt, is_multicolumn=False, checkpoint_callback=None, checkpoint_interval=None, use_json=False):
     """Xử lý dữ liệu với Async Processing (thay thế parallel processing) với checkpoint support"""
     # Import config tại runtime để tránh lỗi circular import
     try:
@@ -789,7 +796,8 @@ def process_data_with_async(model, data, column_names, prompt, is_multicolumn=Fa
                     is_multicolumn=is_multicolumn,
                     column_names=column_names,
                     checkpoint_callback=checkpoint_callback,
-                    checkpoint_interval=checkpoint_interval
+                    checkpoint_interval=checkpoint_interval,
+                    use_json=use_json
                 )
             )
             
@@ -1167,3 +1175,255 @@ def check_and_retry_failed_rows(df, result_column, model, column_names, prompt, 
         logger.info(f"   - Retry success rate: {success_rate:.1f}%")
     
     return retry_stats 
+
+# ===========================
+# JSON PARSING UTILITIES  
+# ===========================
+
+def parse_json_response(response_text, schema=None, repair_malformed=True):
+    """
+    Parse JSON response từ AI với error handling và repair
+    
+    Args:
+        response_text: Text response từ AI
+        schema: JSON schema để validate (optional)
+        repair_malformed: Có thử sửa JSON lỗi format không
+        
+    Returns:
+        dict: Parsed JSON object hoặc None nếu thất bại
+    """
+    # Sử dụng schema mặc định nếu không có
+    if schema is None:
+        schema = JSON_OUTPUT_SCHEMA
+    
+    # Sử dụng config nếu không override
+    if repair_malformed is None:
+        repair_malformed = JSON_REPAIR_MALFORMED
+    
+    try:
+        # Step 1: Clean và extract JSON từ response
+        json_text = extract_json_from_text(response_text)
+        
+        if not json_text:
+            logger.debug("❌ Không tìm thấy JSON trong response")
+            return None
+        
+        # Step 2: Parse JSON
+        try:
+            json_obj = json.loads(json_text)
+            logger.debug("✅ JSON parse thành công")
+        except json.JSONDecodeError as e:
+            if repair_malformed:
+                logger.debug(f"⚠️ JSON parse failed, thử repair: {str(e)}")
+                repaired_json = repair_json_text(json_text)
+                if repaired_json:
+                    json_obj = json.loads(repaired_json)
+                    logger.debug("✅ JSON repair và parse thành công")
+                else:
+                    logger.debug("❌ JSON repair thất bại")
+                    return None
+            else:
+                logger.debug(f"❌ JSON parse failed: {str(e)}")
+                return None
+        
+        # Step 3: Validate schema nếu được bật
+        if JSON_VALIDATE_SCHEMA and schema:
+            try:
+                validate(instance=json_obj, schema=schema)
+                logger.debug("✅ JSON schema validation thành công")
+            except ValidationError as e:
+                logger.debug(f"⚠️ JSON schema validation failed: {str(e)}")
+                # Không return None, vẫn trả về object để caller có thể xử lý
+        
+        return json_obj
+        
+    except Exception as e:
+        logger.debug(f"❌ JSON parsing error: {str(e)}")
+        return None
+
+def extract_json_from_text(text):
+    """
+    Trích xuất JSON object từ text response của AI
+    
+    Args:
+        text: Text chứa JSON (có thể có text khác xung quanh)
+        
+    Returns:
+        str: JSON text được extract hoặc None
+    """
+    if not text or not isinstance(text, str):
+        return None
+    
+    text = text.strip()
+    
+    # Method 1: Tìm JSON object đầu tiên trong text
+    # Tìm vị trí { đầu tiên và } cuối cùng matching
+    start_idx = text.find('{')
+    if start_idx == -1:
+        return None
+    
+    # Tìm matching } bằng cách đếm brackets
+    bracket_count = 0
+    end_idx = -1
+    
+    for i in range(start_idx, len(text)):
+        if text[i] == '{':
+            bracket_count += 1
+        elif text[i] == '}':
+            bracket_count -= 1
+            if bracket_count == 0:
+                end_idx = i
+                break
+    
+    if end_idx == -1:
+        # Không tìm thấy matching }, thử lấy từ start đến cuối
+        json_text = text[start_idx:]
+    else:
+        json_text = text[start_idx:end_idx + 1]
+    
+    return json_text.strip()
+
+def repair_json_text(json_text):
+    """
+    Thử sửa JSON text bị lỗi format phổ biến
+    
+    Args:
+        json_text: JSON text có thể bị lỗi
+        
+    Returns:
+        str: JSON text đã được sửa hoặc None nếu không sửa được
+    """
+    if not json_text:
+        return None
+    
+    try:
+        original = json_text.strip()
+        repaired = original
+        
+        # Repair 1: Thêm quotes cho keys không có quotes
+        repaired = re.sub(r'(\w+):', r'"\1":', repaired)
+        
+        # Repair 2: Thay single quotes thành double quotes
+        repaired = repaired.replace("'", '"')
+        
+        # Repair 3: Sửa trailing comma
+        repaired = re.sub(r',(\s*[}\]])', r'\1', repaired)
+        
+        # Repair 4: Sửa null không đúng format
+        repaired = re.sub(r'\bnull\b', 'null', repaired, flags=re.IGNORECASE)
+        repaired = re.sub(r'\bNone\b', 'null', repaired)
+        repaired = re.sub(r'\bundefined\b', 'null', repaired)
+        
+        # Repair 5: Sửa boolean values
+        repaired = re.sub(r'\bTrue\b', 'true', repaired)
+        repaired = re.sub(r'\bFalse\b', 'false', repaired)
+        
+        # Repair 6: Remove comments
+        repaired = re.sub(r'//.*$', '', repaired, flags=re.MULTILINE)
+        repaired = re.sub(r'/\*.*?\*/', '', repaired, flags=re.DOTALL)
+        
+        # Test nếu repair thành công
+        try:
+            json.loads(repaired)
+            logger.debug("✅ JSON repair thành công")
+            return repaired
+        except json.JSONDecodeError:
+            logger.debug("❌ JSON repair thất bại")
+            return None
+            
+    except Exception as e:
+        logger.debug(f"❌ JSON repair error: {str(e)}")
+        return None
+
+def convert_json_to_text_format(json_obj, delimiter="|"):
+    """
+    Chuyển JSON object thành text format cũ để tương thích
+    
+    Args:
+        json_obj: JSON object đã parse
+        delimiter: Delimiter để nối các field
+        
+    Returns:
+        str: Text format theo pattern cũ
+    """
+    if not isinstance(json_obj, dict):
+        return str(json_obj)
+    
+    try:
+        # Theo format: Category|Sản phẩm|Service|Tag|Note 1
+        fields = [
+            json_obj.get('category') or 'null',
+            json_obj.get('product') or 'null', 
+            json_obj.get('service') or 'null',
+            json_obj.get('tag') or 'null',
+            json_obj.get('note_1') or 'null'
+        ]
+        
+        return delimiter.join(fields)
+        
+    except Exception as e:
+        logger.debug(f"❌ JSON to text conversion error: {str(e)}")
+        return str(json_obj)
+
+def parse_response_with_fallback(response_text, use_json=False, schema=None):
+    """
+    Parse response với fallback từ JSON về text parsing
+    
+    Args:
+        response_text: Response text từ AI
+        use_json: Có thử parse JSON trước không
+        schema: JSON schema để validate
+        
+    Returns:
+        str: Parsed result text
+    """
+    if not response_text:
+        return "Không có response"
+    
+    # Nếu được bật JSON mode, thử parse JSON trước
+    if use_json:
+        json_obj = parse_json_response(response_text, schema)
+        
+        if json_obj:
+            # Convert JSON về text format để tương thích với code cũ
+            return convert_json_to_text_format(json_obj)
+        elif JSON_PARSE_FALLBACK_TO_TEXT:
+            logger.debug("🔄 JSON parse thất bại, fallback về text parsing")
+        else:
+            return f"JSON parse failed: {response_text[:200]}..."
+    
+    # Fallback về text parsing cũ hoặc trả về raw text
+    return response_text.strip()
+
+# Test utility
+def test_json_parsing():
+    """Test JSON parsing utilities"""
+    test_cases = [
+        # Valid JSON
+        '{"category": "Bánh", "product": "ChocoPie", "service": "Review", "tag": "Chất lượng tốt", "note_1": "2"}',
+        
+        # JSON với text xung quanh  
+        'Kết quả phân tích:\n{"category": "Nước khoáng", "product": null, "service": "Sản phẩm", "tag": "Hỏi thảo luận", "note_1": "2"}\nHết.',
+        
+        # JSON với lỗi format
+        "{category: 'Bánh', product: 'ChocoPie', service: 'Review', tag: 'Chất lượng tốt', note_1: '2'}",
+        
+        # Text không có JSON
+        "Category|ChocoPie|Review|Chất lượng tốt|2"
+    ]
+    
+    print("🧪 Testing JSON parsing utilities...")
+    
+    for i, test_case in enumerate(test_cases, 1):
+        print(f"\nTest {i}: {test_case[:50]}...")
+        
+        # Test JSON parsing
+        json_result = parse_json_response(test_case)
+        print(f"  JSON parse: {json_result}")
+        
+        # Test với fallback
+        fallback_result = parse_response_with_fallback(test_case, use_json=True)
+        print(f"  With fallback: {fallback_result}")
+
+if __name__ == "__main__":
+    test_json_parsing() 

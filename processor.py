@@ -269,7 +269,8 @@ class AIDataProcessor:
                 self.config['prompt'],
                 self.config.get('multi_column_mode', False),
                 checkpoint_callback=async_checkpoint_callback,
-                checkpoint_interval=CHECKPOINT_INTERVAL
+                checkpoint_interval=CHECKPOINT_INTERVAL,
+                use_json=self.config.get('use_json_output', False)
             )
             
             # Lưu kết quả vào DataFrame
