@@ -19,7 +19,7 @@ GEMINI_MODEL_NAME = ""      # Sẽ được input từ user (mặc định: gemm
 # Các model Gemini phổ biến
 AVAILABLE_GEMINI_MODELS = [
     "gemma-3-27b-it",
-    "gemma-3n-e4b-it",
+    "gemini-2.5-flash-lite",
     "gemini-2.0-flash-lite",
     "gemini-2.5-flash"
 ]
@@ -60,8 +60,8 @@ AI_RESULT_COLUMN = "AI_RESULT"  # Cột kết quả AI
 # ===========================
 USE_CHECKPOINT = True   # Mặc định sử dụng checkpoint
 CHECKPOINT_FILE = ""    # Sẽ được tự động tạo dựa trên input file
-CHECKPOINT_INTERVAL = 60   # Lưu checkpoint mỗi 60 records (khớp với ASYNC_CHUNK_SIZE)
-PROGRESS_REPORT_INTERVAL = 60  # Báo cáo tiến trình mỗi 60 records
+CHECKPOINT_INTERVAL = 30   # Lưu checkpoint mỗi 60 records (khớp với ASYNC_CHUNK_SIZE)
+PROGRESS_REPORT_INTERVAL = 30  # Báo cáo tiến trình mỗi 60 records
 
 # User prompt - sẽ được input từ user
 USER_PROMPT = ""
@@ -89,10 +89,10 @@ CIRCUIT_BREAKER_THRESHOLD = 3      # Số lỗi liên tiếp để kích hoạt 
 # ASYNC PROCESSING CONFIGURATION - OPTIMIZED FOR GPT-4.1 MINI PAID TIER
 # ===========================
 ENABLE_ASYNC_PROCESSING = True     # Bật/tắt async processing (MẶC ĐỊNH BẬT)
-MAX_CONCURRENT_REQUESTS = 3        # Giảm concurrent để tránh burst (từ 5 → 3)
+MAX_CONCURRENT_REQUESTS = 10        # Giảm concurrent để tránh burst (từ 5 → 3)
 ASYNC_BATCH_SIZE = 5              # Giảm batch size để ổn định (từ 5 → 3)
 ASYNC_CHUNK_SIZE = 100             # Giảm chunk size để checkpoint thường xuyên (từ 100 → 60)
-ASYNC_RATE_LIMIT_RPM = 400        # An toàn với 500 RPM limit (80% của limit)
+ASYNC_RATE_LIMIT_RPM = 1000        # An toàn với 500 RPM limit (80% của limit)
 ASYNC_TIMEOUT = 90                # Tăng timeout cho GPT-4.1 Mini (từ 60 → 90)
 ASYNC_MAX_RETRIES = 3             # Giữ nguyên số lần retry
 ASYNC_RETRY_DELAY = 5             # Tăng delay base cho exponential backoff (từ 2 → 5)
@@ -102,7 +102,7 @@ ASYNC_ENABLE_RATE_LIMITER = True  # BẮT BUỘC bật rate limiter
 # MODEL PARAMETERS
 # ===========================
 MAX_OUTPUT_TOKENS = 30000
-TEMPERATURE = 0.3
+TEMPERATURE = 0
 TOP_P = 0.8
 TOP_K = 40
 

@@ -37,7 +37,7 @@ def main():
             print("\n❌ Quá trình xử lý gặp lỗi!")
             
         return success
-        
+        1
     except KeyboardInterrupt:
         print("\n⏹️ Người dùng dừng chương trình.")
         return False

@@ -13,10 +13,16 @@ from dataclasses import dataclass
 from tqdm import tqdm
 import traceback
 
+# Import config làm default, nhưng cho phép override
 from config import (
-    MAX_CONCURRENT_REQUESTS, ASYNC_BATCH_SIZE, ASYNC_CHUNK_SIZE,
-    ASYNC_RATE_LIMIT_RPM, ASYNC_TIMEOUT, ASYNC_MAX_RETRIES,
-    ASYNC_RETRY_DELAY, ASYNC_ENABLE_RATE_LIMITER
+    MAX_CONCURRENT_REQUESTS as DEFAULT_MAX_CONCURRENT_REQUESTS, 
+    ASYNC_BATCH_SIZE as DEFAULT_ASYNC_BATCH_SIZE, 
+    ASYNC_CHUNK_SIZE as DEFAULT_ASYNC_CHUNK_SIZE,
+    ASYNC_RATE_LIMIT_RPM as DEFAULT_ASYNC_RATE_LIMIT_RPM, 
+    ASYNC_TIMEOUT as DEFAULT_ASYNC_TIMEOUT, 
+    ASYNC_MAX_RETRIES as DEFAULT_ASYNC_MAX_RETRIES,
+    ASYNC_RETRY_DELAY as DEFAULT_ASYNC_RETRY_DELAY, 
+    ASYNC_ENABLE_RATE_LIMITER as DEFAULT_ASYNC_ENABLE_RATE_LIMITER
 )
 
 # Setup logging
@@ -42,19 +48,20 @@ class AsyncProcessingResult:
 class AsyncRateLimiter:
     """Dynamic Rate Limiter với async support"""
     
-    def __init__(self, rate_limit_rpm: int = ASYNC_RATE_LIMIT_RPM):
-        self.rate_limit_rpm = rate_limit_rpm
-        self.interval = 60.0 / rate_limit_rpm  # Seconds between requests
+    def __init__(self, rate_limit_rpm: int = None, enable_rate_limiter: bool = None):
+        self.rate_limit_rpm = rate_limit_rpm or DEFAULT_ASYNC_RATE_LIMIT_RPM
+        self.enable_rate_limiter = enable_rate_limiter if enable_rate_limiter is not None else DEFAULT_ASYNC_ENABLE_RATE_LIMITER
+        self.interval = 60.0 / self.rate_limit_rpm  # Seconds between requests
         self._lock = asyncio.Lock()
         self._last_request_time = 0.0
         self._requests_this_minute = 0
         self._minute_start = time.time()
         
-        logger.info(f"🎯 AsyncRateLimiter initialized: {rate_limit_rpm} RPM (interval: {self.interval:.3f}s)")
+        logger.info(f"🎯 AsyncRateLimiter initialized: {self.rate_limit_rpm} RPM (interval: {self.interval:.3f}s)")
     
     async def acquire(self):
         """Chờ cho đến khi có thể gửi request tiếp theo"""
-        if not ASYNC_ENABLE_RATE_LIMITER:
+        if not self.enable_rate_limiter:
             return
             
         async with self._lock:
@@ -87,12 +94,25 @@ class AsyncRateLimiter:
 class AsyncAPIClient:
     """Async API Client cho Gemini và OpenAI"""
     
-    def __init__(self, api_provider: str, api_key: str, model_name: str):
+    def __init__(self, api_provider: str, api_key: str, model_name: str, 
+                 max_concurrent_requests: int = None,
+                 rate_limit_rpm: int = None,
+                 timeout: int = None,
+                 max_retries: int = None,
+                 retry_delay: int = None,
+                 enable_rate_limiter: bool = None):
         self.api_provider = api_provider.lower()
         self.api_key = api_key
         self.model_name = model_name
-        self.rate_limiter = AsyncRateLimiter()
-        self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+        
+        # Sử dụng tham số truyền vào hoặc default từ config
+        self.max_concurrent_requests = max_concurrent_requests or DEFAULT_MAX_CONCURRENT_REQUESTS
+        self.timeout = timeout or DEFAULT_ASYNC_TIMEOUT
+        self.max_retries = max_retries or DEFAULT_ASYNC_MAX_RETRIES
+        self.retry_delay = retry_delay or DEFAULT_ASYNC_RETRY_DELAY
+        
+        self.rate_limiter = AsyncRateLimiter(rate_limit_rpm, enable_rate_limiter)
+        self.semaphore = asyncio.Semaphore(self.max_concurrent_requests)
         
         # Setup endpoints và headers
         if self.api_provider == "gemini":
@@ -113,7 +133,7 @@ class AsyncAPIClient:
             raise ValueError(f"Unsupported API provider: {api_provider}")
         
         logger.info(f"🚀 AsyncAPIClient initialized: {api_provider} - {model_name}")
-        logger.info(f"📊 Concurrent limit: {MAX_CONCURRENT_REQUESTS}, Rate limit: {ASYNC_RATE_LIMIT_RPM} RPM")
+        logger.info(f"📊 Concurrent limit: {self.max_concurrent_requests}, Rate limit: {self.rate_limiter.rate_limit_rpm} RPM")
     
     def _prepare_gemini_payload(self, prompt: str) -> Dict[str, Any]:
         """Chuẩn bị payload cho Gemini API"""
@@ -122,11 +142,30 @@ class AsyncAPIClient:
                 "parts": [{"text": prompt}]
             }],
             "generationConfig": {
-                "temperature": 0.3,
+                "temperature": 0.0,  # Giảm temperature để ổn định hơn
                 "topP": 0.8,
                 "topK": 40,
-                "maxOutputTokens": 10000
-            }
+                "maxOutputTokens": 30000,  # Tăng maxOutputTokens cho JSON phức tạp
+                "candidateCount": 1
+            },
+            "safetySettings": [
+                {
+                    "category": "HARM_CATEGORY_HARASSMENT",
+                    "threshold": "BLOCK_NONE"
+                },
+                {
+                    "category": "HARM_CATEGORY_HATE_SPEECH", 
+                    "threshold": "BLOCK_NONE"
+                },
+                {
+                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "threshold": "BLOCK_NONE"
+                },
+                {
+                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    "threshold": "BLOCK_NONE"
+                }
+            ]
         }
     
     def _prepare_openai_payload(self, prompt: str) -> Dict[str, Any]:
@@ -142,11 +181,55 @@ class AsyncAPIClient:
         """Trích xuất text từ response"""
         try:
             if self.api_provider == "gemini":
-                return response_data["candidates"][0]["content"]["parts"][0]["text"]
+                # Debug: Log response structure
+                logger.debug(f"🔍 Gemini response structure: {list(response_data.keys())}")
+                
+                # Kiểm tra response structure
+                if "candidates" not in response_data:
+                    logger.error(f"❌ Gemini response missing 'candidates': {response_data}")
+                    return f"API Error: Missing candidates in response"
+                
+                if not response_data["candidates"]:
+                    logger.error(f"❌ Gemini response has empty candidates: {response_data}")
+                    return f"API Error: Empty candidates array"
+                
+                candidate = response_data["candidates"][0]
+                if "content" not in candidate:
+                    logger.error(f"❌ Gemini candidate missing 'content': {candidate}")
+                    return f"API Error: Missing content in candidate"
+                
+                if "parts" not in candidate["content"]:
+                    logger.error(f"❌ Gemini content missing 'parts': {candidate['content']}")
+                    return f"API Error: Missing parts in content"
+                
+                if not candidate["content"]["parts"]:
+                    logger.error(f"❌ Gemini parts is empty: {candidate['content']}")
+                    return f"API Error: Empty parts array"
+                
+                text = candidate["content"]["parts"][0]["text"]
+                if not text or text.strip() == "":
+                    logger.warning("⚠️ Empty response text received from Gemini API")
+                    logger.debug(f"🔍 Full Gemini response: {response_data}")
+                    return "Empty response"
+                
+                logger.debug(f"✅ Extracted text from Gemini: {text[:100]}...")
+                return text
+                
             elif self.api_provider == "openai":
-                return response_data["choices"][0]["message"]["content"]
+                text = response_data["choices"][0]["message"]["content"]
+                if not text or text.strip() == "":
+                    logger.warning("⚠️ Empty response text received from OpenAI API")
+                    return "Empty response"
+                return text
+                
         except (KeyError, IndexError) as e:
-            raise ValueError(f"Không thể parse response: {e}")
+            logger.error(f"❌ Không thể parse response structure: {e}")
+            logger.error(f"🔍 Full response data: {response_data}")
+            return f"Parse error: {str(e)}"
+        except Exception as e:
+            logger.error(f"❌ Unexpected error extracting response text: {e}")
+            logger.error(f"🔍 Full response data: {response_data}")
+            return f"Extraction error: {str(e)}"
     
     def _parse_response_with_json_support(self, response_text: str, use_json: bool = False) -> str:
         """Parse response với JSON support"""
@@ -175,20 +258,20 @@ class AsyncAPIClient:
             payload = self._prepare_openai_payload(prompt)
             url = self.base_url
         
-        for attempt in range(ASYNC_MAX_RETRIES):
+        for attempt in range(self.max_retries):
             try:
                 # Rate limiting và semaphore
                 await self.rate_limiter.acquire()
                 
                 async with self.semaphore:
-                    timeout = aiohttp.ClientTimeout(total=ASYNC_TIMEOUT)
+                    timeout = aiohttp.ClientTimeout(total=self.timeout)
                     
                     async with aiohttp.ClientSession(timeout=timeout) as session:
                         async with session.post(url, headers=self.headers, json=payload) as response:
                             
                             # Xử lý rate limit response
                             if response.status == 429:
-                                retry_after = int(response.headers.get('Retry-After', ASYNC_RETRY_DELAY))
+                                retry_after = int(response.headers.get('Retry-After', self.retry_delay))
                                 logger.warning(f"⚠️ Rate limit hit for {item_id}, waiting {retry_after}s")
                                 await asyncio.sleep(retry_after)
                                 retry_count += 1
@@ -223,7 +306,7 @@ class AsyncAPIClient:
             
             except asyncio.TimeoutError:
                 retry_count += 1
-                error_msg = f"Timeout after {ASYNC_TIMEOUT}s"
+                error_msg = f"Timeout after {self.timeout}s"
                 logger.warning(f"⏰ {error_msg} for {item_id} (attempt {attempt + 1})")
                 
             except aiohttp.ClientError as e:
@@ -238,14 +321,14 @@ class AsyncAPIClient:
                 logger.debug(traceback.format_exc())
             
             # Exponential backoff
-            if attempt < ASYNC_MAX_RETRIES - 1:
-                wait_time = ASYNC_RETRY_DELAY * (2 ** attempt)
+            if attempt < self.max_retries - 1:
+                wait_time = self.retry_delay * (2 ** attempt)
                 logger.debug(f"⏳ Retrying {item_id} in {wait_time}s")
                 await asyncio.sleep(wait_time)
         
         # Tất cả attempts đều thất bại
         processing_time = time.time() - start_time
-        final_error = f"Failed after {ASYNC_MAX_RETRIES} attempts"
+        final_error = f"Failed after {self.max_retries} attempts"
         logger.error(f"💥 {final_error} for {item_id}")
         
         return AsyncProcessingResult(
@@ -262,7 +345,7 @@ class AsyncAPIClient:
         start_time = time.time()
         retry_count = 0
         
-        for attempt in range(ASYNC_MAX_RETRIES):
+        for attempt in range(self.max_retries):
             try:
                 # Acquire semaphore và rate limit
                 async with self.semaphore:
@@ -278,7 +361,7 @@ class AsyncAPIClient:
                         headers = {"Authorization": f"Bearer {self.api_key}"}
                     
                     # Make request với timeout
-                    timeout = aiohttp.ClientTimeout(total=ASYNC_TIMEOUT * 2)  # Batch cần timeout lớn hơn
+                    timeout = aiohttp.ClientTimeout(total=self.timeout * 2)  # Batch cần timeout lớn hơn
                     async with aiohttp.ClientSession(timeout=timeout) as session:
                         async with session.post(
                             url, 
@@ -313,7 +396,7 @@ class AsyncAPIClient:
             
             except asyncio.TimeoutError:
                 retry_count += 1
-                error_msg = f"Batch timeout after {ASYNC_TIMEOUT * 2}s"
+                error_msg = f"Batch timeout after {self.timeout * 2}s"
                 logger.warning(f"⏰ {error_msg} for {batch_id} (attempt {attempt + 1})")
                 
             except aiohttp.ClientError as e:
@@ -328,14 +411,14 @@ class AsyncAPIClient:
                 logger.debug(traceback.format_exc())
             
             # Exponential backoff
-            if attempt < ASYNC_MAX_RETRIES - 1:
-                wait_time = ASYNC_RETRY_DELAY * (2 ** attempt)
+            if attempt < self.max_retries - 1:
+                wait_time = self.retry_delay * (2 ** attempt)
                 logger.debug(f"⏳ Retrying batch {batch_id} in {wait_time}s")
                 await asyncio.sleep(wait_time)
         
         # Tất cả attempts đều thất bại
         processing_time = time.time() - start_time
-        final_error = f"Batch failed after {ASYNC_MAX_RETRIES} attempts"
+        final_error = f"Batch failed after {self.max_retries} attempts"
         logger.error(f"💥 {final_error} for {batch_id}")
         
         return AsyncProcessingResult(
@@ -347,18 +430,119 @@ class AsyncAPIClient:
         )
     
     def _parse_batch_response(self, response_text: str, expected_count: int) -> List[str]:
-        """Parse batch response thành list results với improved reliability"""
+        """Parse batch response thành list results - ƯU TIÊN JSON ARRAY VỚI ITEM_ID"""
         
         try:
             # Clean response text
             response_text = response_text.strip()
             if not response_text:
                 logger.warning("⚠️ Empty response text received")
-                return ["Empty response"] * expected_count
+                return [f"Empty response - Batch processing failed"] * expected_count
             
-            # Method 1: Tìm pattern "Item X: [result]" với improved regex
+            # Kiểm tra nếu response chỉ chứa "Empty response"
+            if response_text.lower() == "empty response":
+                logger.warning("⚠️ Batch response contains only 'Empty response'")
+                return [f"Empty response - API error"] * expected_count
+            
             import re
+            import json
             
+            # METHOD 1: JSON ARRAY PARSING (MỚI - ƯU TIÊN NHẤT)
+            # Tìm JSON array với item_id
+            json_array_pattern = r'\[\s*\{.*?\}\s*\]'
+            json_array_matches = re.findall(json_array_pattern, response_text, re.DOTALL)
+            
+            if json_array_matches:
+                for array_match in json_array_matches:
+                    try:
+                        # Parse JSON array
+                        json_array = json.loads(array_match)
+                        
+                        if isinstance(json_array, list) and len(json_array) >= expected_count:
+                            # Sort by item_id if available
+                            if all('item_id' in item for item in json_array if isinstance(item, dict)):
+                                sorted_items = sorted(json_array, key=lambda x: x.get('item_id', 0))
+                                
+                                # Convert back to JSON strings, remove item_id
+                                results = []
+                                for item in sorted_items[:expected_count]:
+                                    if isinstance(item, dict):
+                                        # Remove item_id before returning
+                                        clean_item = {k: v for k, v in item.items() if k != 'item_id'}
+                                        formatted_json = json.dumps(clean_item, ensure_ascii=False, indent=2)
+                                        results.append(formatted_json)
+                                    else:
+                                        results.append(json.dumps(item, ensure_ascii=False, indent=2))
+                                
+                                return results
+                            else:
+                                # JSON array nhưng không có item_id, dùng thứ tự
+                                results = []
+                                for item in json_array[:expected_count]:
+                                    formatted_json = json.dumps(item, ensure_ascii=False, indent=2)
+                                    results.append(formatted_json)
+                                return results
+                    except json.JSONDecodeError:
+                        continue
+            
+            # METHOD 2: INDIVIDUAL JSON OBJECTS PARSING (CŨ)
+            # Tìm các JSON objects riêng lẻ trong response
+            json_results = []
+            
+            # Pattern để tìm JSON objects
+            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+            json_matches = re.findall(json_pattern, response_text, re.DOTALL)
+            
+            if json_matches:
+                # Validate và parse các JSON objects
+                for match in json_matches:
+                    try:
+                        # Try to parse as JSON
+                        parsed_json = json.loads(match)
+                        
+                        # Remove item_id if present (để đảm bảo clean output)
+                        if isinstance(parsed_json, dict) and 'item_id' in parsed_json:
+                            clean_json = {k: v for k, v in parsed_json.items() if k != 'item_id'}
+                            formatted_json = json.dumps(clean_json, ensure_ascii=False, indent=2)
+                        else:
+                            formatted_json = json.dumps(parsed_json, ensure_ascii=False, indent=2)
+                        
+                        json_results.append(formatted_json)
+                    except json.JSONDecodeError:
+                        # Nếu không parse được, thử clean và parse lại
+                        try:
+                            # Clean common issues
+                            cleaned_match = match.strip()
+                            # Fix trailing commas
+                            cleaned_match = re.sub(r',(\s*[}\]])', r'\1', cleaned_match)
+                            # Fix single quotes to double quotes
+                            cleaned_match = re.sub(r"'([^']*)':", r'"\1":', cleaned_match)
+                            
+                            parsed_json = json.loads(cleaned_match)
+                            
+                            # Remove item_id if present
+                            if isinstance(parsed_json, dict) and 'item_id' in parsed_json:
+                                clean_json = {k: v for k, v in parsed_json.items() if k != 'item_id'}
+                                formatted_json = json.dumps(clean_json, ensure_ascii=False, indent=2)
+                            else:
+                                formatted_json = json.dumps(parsed_json, ensure_ascii=False, indent=2)
+                            
+                            json_results.append(formatted_json)
+                        except:
+                            continue
+                
+                # Nếu có đủ JSON objects, return
+                if len(json_results) >= expected_count:
+                    results = json_results[:expected_count]
+                    return results
+                elif len(json_results) > 0:
+                    # Có 1 số JSON nhưng không đủ
+                    # Pad thiếu với error messages
+                    while len(json_results) < expected_count:
+                        json_results.append('{"error": "JSON object missing from batch response"}')
+                    return json_results[:expected_count]
+            
+            # METHOD 3: TEXT PATTERN PARSING (FALLBACK)
             # Try multiple patterns to handle various AI response formats
             patterns = [
                 r'Item\s+(\d+):\s*(.+?)(?=\n\s*Item\s+\d+:|$)',  # Standard format with newline
@@ -387,17 +571,13 @@ class AsyncAPIClient:
                                 cleaned_results.append(result)
                         
                         results = cleaned_results
-                        logger.debug(f"✅ Parsed {len(results)} results using pattern: {pattern[:30]}...")
                         break
                         
-                    except (ValueError, IndexError) as e:
-                        logger.debug(f"⚠️ Pattern {pattern[:20]}... failed: {str(e)}")
+                    except (ValueError, IndexError):
                         continue
             
-            # Method 2: Fallback - Split by common delimiters
+            # METHOD 4: Fallback - Split by common delimiters
             if not results or len(results) < expected_count * 0.5:
-                logger.debug("🔄 Using fallback parsing method...")
-                
                 # Try splitting by various delimiters
                 delimiters = ['\n\n', '\n---', '\n-', '\n•', '\n*', '\n']
                 
@@ -414,13 +594,10 @@ class AsyncAPIClient:
                     
                     if len(filtered_lines) >= expected_count * 0.5:
                         results = filtered_lines[:expected_count]
-                        logger.debug(f"✅ Fallback parsing found {len(results)} results")
                         break
             
-            # Method 3: Last resort - intelligent splitting
+            # METHOD 5: Last resort - intelligent splitting
             if not results:
-                logger.warning("⚠️ Using last resort parsing...")
-                
                 # Remove common prefixes and split intelligently
                 cleaned_text = re.sub(r'^.*?(?:Kết quả|Result):\s*', '', response_text, flags=re.IGNORECASE | re.DOTALL)
                 
@@ -442,32 +619,20 @@ class AsyncAPIClient:
                         if chunk:
                             results.append(chunk)
                         else:
-                            results.append("Không thể parse kết quả")
+                            results.append(f"Text chunk {i+1} empty")
             
-            # Final validation and padding
-            if len(results) < expected_count:
-                padding_needed = expected_count - len(results)
-                logger.warning(f"⚠️ Padding {padding_needed} missing results")
-                results.extend([f"Không tìm thấy kết quả {len(results)+j+1}" for j in range(padding_needed)])
-            elif len(results) > expected_count:
-                logger.warning(f"⚠️ Trimming {len(results) - expected_count} excess results")
+            # Ensure we have exactly expected_count results
+            if len(results) > expected_count:
                 results = results[:expected_count]
+            elif len(results) < expected_count:
+                while len(results) < expected_count:
+                    results.append("Parse failed - missing result")
             
-            # Quality check
-            valid_results = [r for r in results if r and len(r.strip()) > 0]
-            if len(valid_results) < expected_count * 0.3:  # Less than 30% valid results
-                logger.warning(f"⚠️ Low quality batch parsing: {len(valid_results)}/{expected_count} valid results")
-            
-            logger.debug(f"✅ Final batch parsing: {len(results)} results, {len(valid_results)} valid")
             return results
-                    
-        except Exception as e:
-            logger.error(f"❌ Batch parsing error: {str(e)}, using emergency fallback")
-            logger.debug(traceback.format_exc())
             
-            # Emergency fallback: return the full response for each item with a note
-            emergency_result = f"Parse error - Full response: {response_text[:200]}..."
-            return [emergency_result] * expected_count
+        except Exception as e:
+            logger.error(f"❌ Batch parsing failed: {str(e)}")
+            return [f"Parse error: {str(e)}"] * expected_count
 
 class AsyncDataProcessor:
     """Main async data processor"""
@@ -500,8 +665,8 @@ Nội dung cần xử lý:
 
 Kết quả:"""
     
-    def _prepare_batch_prompt(self, items: List[Any], prompt_template: str, is_multicolumn: bool = False, column_names: List[str] = None) -> str:
-        """Chuẩn bị prompt cho batch items"""
+    def _prepare_batch_prompt(self, items: List[Any], prompt_template: str, is_multicolumn: bool = False, column_names: List[str] = None, use_json: bool = False) -> str:
+        """Chuẩn bị prompt cho batch items - hỗ trợ JSON với item_id"""
         
         batch_data = []
         for idx, item in enumerate(items):
@@ -519,7 +684,26 @@ Kết quả:"""
         
         batch_text = "\n\n".join(batch_data)
         
-        return f"""{prompt_template}
+        if use_json:
+            # JSON format với item_id để track
+            return f"""{prompt_template}
+
+XỬ LÝ BATCH {len(items)} ITEMS:
+{batch_text}
+
+QUAN TRỌNG: Hãy trả về kết quả cho từng item theo format JSON array:
+[
+  {{"item_id": 1, ...}},
+  {{"item_id": 2, ...}},
+  ...,
+  {{"item_id": {len(items)}, ...}}
+]
+
+Mỗi JSON object phải có field "item_id" để xác định thứ tự.
+CHỈ trả về JSON array, KHÔNG có text khác."""
+        else:
+            # Text format truyền thống
+            return f"""{prompt_template}
 
 XỬ LÝ BATCH {len(items)} ITEMS:
 {batch_text}
@@ -540,20 +724,20 @@ Kết quả:"""
                                 use_json: bool = False) -> List[AsyncProcessingResult]:
         """Xử lý batch items với async - SỬ DỤNG ASYNC_BATCH_SIZE"""
         
-        logger.info(f"🚀 Starting async batch processing: {len(items)} items với batch size {ASYNC_BATCH_SIZE}")
+        logger.info(f"🚀 Starting async batch processing: {len(items)} items với batch size {DEFAULT_ASYNC_BATCH_SIZE}")
         
         # Chia items thành batches theo ASYNC_BATCH_SIZE
         all_results = []
-        batches = [items[i:i + ASYNC_BATCH_SIZE] for i in range(0, len(items), ASYNC_BATCH_SIZE)]
+        batches = [items[i:i + DEFAULT_ASYNC_BATCH_SIZE] for i in range(0, len(items), DEFAULT_ASYNC_BATCH_SIZE)]
         
-        logger.info(f"📦 Chia thành {len(batches)} batches, mỗi batch {ASYNC_BATCH_SIZE} items")
+        logger.info(f"📦 Chia thành {len(batches)} batches, mỗi batch {DEFAULT_ASYNC_BATCH_SIZE} items")
         
         # Tạo tasks cho từng batch
         tasks = []
         batch_metadata = []  # Track batch info for proper ordering
         
         for batch_idx, batch in enumerate(batches):
-            if ASYNC_BATCH_SIZE == 1:
+            if DEFAULT_ASYNC_BATCH_SIZE == 1:
                 # Single item processing
                 for item_idx, item in enumerate(batch):
                     prompt = self._prepare_prompt(item, prompt_template, is_multicolumn, column_names)
@@ -568,7 +752,7 @@ Kết quả:"""
                     })
             else:
                 # True batch processing - gửi nhiều items trong 1 request
-                batch_prompt = self._prepare_batch_prompt(batch, prompt_template, is_multicolumn, column_names)
+                batch_prompt = self._prepare_batch_prompt(batch, prompt_template, is_multicolumn, column_names, use_json)
                 batch_id = f"batch_{batch_idx}"
                 task = self.api_client.process_batch_request(batch_prompt, batch_id, len(batch), use_json)
                 tasks.append(task)
@@ -658,11 +842,12 @@ Kết quả:"""
                                  column_names: List[str] = None,
                                  checkpoint_callback=None,
                                  checkpoint_interval: int = None,
-                                 use_json: bool = False) -> List[str]:
+                                 use_json: bool = False,
+                                 chunk_size: int = None) -> List[str]:
         """Xử lý data theo chunks để tránh memory issues với checkpoint support"""
         
         total_items = len(data)
-        chunk_size = ASYNC_CHUNK_SIZE
+        chunk_size = chunk_size or DEFAULT_ASYNC_CHUNK_SIZE
         all_results = []
         
         logger.info(f"📦 Processing {total_items} items in chunks of {chunk_size}")
@@ -729,15 +914,34 @@ async def process_data_async(api_provider: str,
                            column_names: List[str] = None,
                            checkpoint_callback=None,
                            checkpoint_interval: int = None,
-                           use_json: bool = False) -> List[str]:
-    """Main entry point cho async processing với checkpoint support"""
+                           use_json: bool = False,
+                           # Thêm các tham số config
+                           max_concurrent_requests: int = None,
+                           async_batch_size: int = None,
+                           async_chunk_size: int = None,
+                           rate_limit_rpm: int = None,
+                           timeout: int = None,
+                           max_retries: int = None,
+                           retry_delay: int = None,
+                           enable_rate_limiter: bool = None) -> List[str]:
+    """Main entry point cho async processing với checkpoint support và config tùy chỉnh"""
     
     try:
-        # Initialize client và processor
-        api_client = AsyncAPIClient(api_provider, api_key, model_name)
+        # Initialize client với config tùy chỉnh
+        api_client = AsyncAPIClient(
+            api_provider, 
+            api_key, 
+            model_name,
+            max_concurrent_requests=max_concurrent_requests,
+            rate_limit_rpm=rate_limit_rpm,
+            timeout=timeout,
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+            enable_rate_limiter=enable_rate_limiter
+        )
         processor = AsyncDataProcessor(api_client)
         
-        # Process data với checkpoint support
+        # Process data với checkpoint support và custom chunk size
         start_time = time.time()
         results = await processor.process_data_chunked(
             data, 
@@ -746,21 +950,19 @@ async def process_data_async(api_provider: str,
             column_names,
             checkpoint_callback=checkpoint_callback,
             checkpoint_interval=checkpoint_interval,
-            use_json=use_json
+            use_json=use_json,
+            chunk_size=async_chunk_size
         )
         
-        # Final summary
-        elapsed_time = time.time() - start_time
-        throughput = len(data) / elapsed_time if elapsed_time > 0 else 0
+        end_time = time.time()
+        total_time = end_time - start_time
         
-        logger.info(f"🏆 Async processing completed!")
-        logger.info(f"📊 Total items: {len(data)}")
-        logger.info(f"⏱️ Total time: {elapsed_time:.2f}s")
-        logger.info(f"🚀 Throughput: {throughput:.2f} items/second")
+        logger.info(f"🎉 Async processing hoàn thành trong {total_time:.2f}s")
+        logger.info(f"📊 Trung bình: {total_time/len(data):.2f}s/item")
         
         return results
         
     except Exception as e:
-        logger.error(f"💥 Async processing failed: {str(e)}")
+        logger.error(f"❌ Async processing failed: {str(e)}")
         logger.debug(traceback.format_exc())
         raise 

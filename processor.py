@@ -58,8 +58,8 @@ class AIDataProcessor:
         
         # Thiết lập file paths
         self.input_file = config['input_file']
-        self.output_file = generate_output_filename(self.input_file)
-        self.checkpoint_file = generate_checkpoint_filename(self.input_file) if config['use_checkpoint'] else None
+        self.output_file = generate_output_filename(self.input_file, config.get('output_format'))
+        self.checkpoint_file = generate_checkpoint_filename(self.input_file, config.get('output_format')) if config['use_checkpoint'] else None
         
     def initialize(self):
         """Khởi tạo các thành phần cần thiết"""

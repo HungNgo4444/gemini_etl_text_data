@@ -454,6 +454,24 @@ def get_user_input():
     while True:
         confirm = input("\nXác nhận bắt đầu xử lý? (y/n): ").strip().lower()
         if confirm in ['y', 'yes', 'có']:
+            # Thêm bước chọn định dạng lưu file output
+            print("\n💾 BƯỚC 10: Chọn định dạng lưu file kết quả")
+            print("-" * 40)
+            print("Chọn định dạng lưu file:")
+            print("  1. Excel (.xlsx)")
+            print("  2. CSV (.csv)")
+            while True:
+                output_format_choice = input("\nChọn định dạng (1 hoặc 2) [1]: ").strip()
+                if output_format_choice in ['', '1']:
+                    user_config['output_format'] = 'xlsx'
+                    print("✅ Sẽ lưu file kết quả ở định dạng Excel (.xlsx)")
+                    break
+                elif output_format_choice == '2':
+                    user_config['output_format'] = 'csv'
+                    print("✅ Sẽ lưu file kết quả ở định dạng CSV (.csv)")
+                    break
+                else:
+                    print("❌ Vui lòng chọn 1 hoặc 2")
             print("🚀 Bắt đầu xử lý...")
             return user_config
         elif confirm in ['n', 'no', 'không']:

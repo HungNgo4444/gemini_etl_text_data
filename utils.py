@@ -287,17 +287,23 @@ def detect_message_column(df):
     
     return None
 
-def generate_output_filename(input_file):
-    """Tạo tên file output dựa trên file input"""
+def generate_output_filename(input_file, output_format=None):
+    """Tạo tên file output dựa trên file input và định dạng output"""
     input_path = Path(input_file)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_name = f"{input_path.stem}_ai_result_{timestamp}{input_path.suffix}"
+    if output_format == 'csv':
+        output_name = f"{input_path.stem}_ai_result_{timestamp}.csv"
+    else:
+        output_name = f"{input_path.stem}_ai_result_{timestamp}.xlsx"
     return str(input_path.parent / output_name)
 
-def generate_checkpoint_filename(input_file):
-    """Tạo tên file checkpoint dựa trên file input"""
+def generate_checkpoint_filename(input_file, output_format=None):
+    """Tạo tên file checkpoint dựa trên file input và định dạng output"""
     input_path = Path(input_file)
-    checkpoint_name = f"{input_path.stem}_checkpoint{input_path.suffix}"
+    if output_format == 'csv':
+        checkpoint_name = f"{input_path.stem}_checkpoint.csv"
+    else:
+        checkpoint_name = f"{input_path.stem}_checkpoint.xlsx"
     return str(input_path.parent / checkpoint_name)
 
 def load_checkpoint(checkpoint_file):
@@ -1192,10 +1198,6 @@ def parse_json_response(response_text, schema=None, repair_malformed=True):
     Returns:
         dict: Parsed JSON object hoặc None nếu thất bại
     """
-    # Sử dụng schema mặc định nếu không có
-    if schema is None:
-        schema = JSON_OUTPUT_SCHEMA
-    
     # Sử dụng config nếu không override
     if repair_malformed is None:
         repair_malformed = JSON_REPAIR_MALFORMED
@@ -1226,14 +1228,16 @@ def parse_json_response(response_text, schema=None, repair_malformed=True):
                 logger.debug(f"❌ JSON parse failed: {str(e)}")
                 return None
         
-        # Step 3: Validate schema nếu được bật
-        if JSON_VALIDATE_SCHEMA and schema:
+        # Step 3: Validate schema nếu được bật và có schema phù hợp
+        if JSON_VALIDATE_SCHEMA and schema and _is_compatible_schema(json_obj, schema):
             try:
                 validate(instance=json_obj, schema=schema)
                 logger.debug("✅ JSON schema validation thành công")
             except ValidationError as e:
                 logger.debug(f"⚠️ JSON schema validation failed: {str(e)}")
                 # Không return None, vẫn trả về object để caller có thể xử lý
+        else:
+            logger.debug("🔄 Bỏ qua schema validation (schema không tương thích hoặc không có)")
         
         return json_obj
         
@@ -1241,9 +1245,35 @@ def parse_json_response(response_text, schema=None, repair_malformed=True):
         logger.debug(f"❌ JSON parsing error: {str(e)}")
         return None
 
+def _is_compatible_schema(json_obj, schema):
+    """
+    Kiểm tra xem JSON object có tương thích với schema không
+    
+    Args:
+        json_obj: JSON object đã parse
+        schema: JSON schema
+        
+    Returns:
+        bool: True nếu tương thích
+    """
+    if not isinstance(json_obj, dict) or not isinstance(schema, dict):
+        return False
+    
+    # Schema cũ (category, product, service, tag, note_1)
+    old_schema_fields = ['category', 'product', 'service', 'tag', 'note_1']
+    has_old_fields = any(field in json_obj for field in old_schema_fields)
+    
+    # Schema mới (Masterise Group - AI_SACTHAI, AI_TOPICS, etc.)
+    new_schema_fields = ['AI_SACTHAI', 'AI_TOPICS', 'AI_DOITUONG', 'AI_THELOAINOIDUNG']
+    has_new_fields = any(field in json_obj for field in new_schema_fields)
+    
+    # Chỉ validate nếu có old schema fields
+    return has_old_fields and not has_new_fields
+
 def extract_json_from_text(text):
     """
     Trích xuất JSON object từ text response của AI
+    Hỗ trợ xử lý JSON được bọc trong markdown code blocks
     
     Args:
         text: Text chứa JSON (có thể có text khác xung quanh)
@@ -1256,8 +1286,46 @@ def extract_json_from_text(text):
     
     text = text.strip()
     
-    # Method 1: Tìm JSON object đầu tiên trong text
-    # Tìm vị trí { đầu tiên và } cuối cùng matching
+    # Method 1: Xử lý markdown code blocks (```json ... ```)
+    markdown_patterns = [
+        r'```json\s*(.*?)\s*```',  # ```json ... ```
+        r'```\s*(.*?)\s*```',      # ``` ... ```
+        r'`(.*?)`',                # ` ... `
+    ]
+    
+    for pattern in markdown_patterns:
+        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+        if matches:
+            # Lấy match đầu tiên và tìm JSON object trong đó
+            for match in matches:
+                json_text = _extract_json_object(match.strip())
+                if json_text:
+                    logger.debug("✅ Tìm thấy JSON trong markdown code block")
+                    return json_text
+    
+    # Method 2: Tìm JSON object trực tiếp trong text
+    json_text = _extract_json_object(text)
+    if json_text:
+        logger.debug("✅ Tìm thấy JSON object trực tiếp")
+        return json_text
+    
+    logger.debug("❌ Không tìm thấy JSON object trong text")
+    return None
+
+def _extract_json_object(text):
+    """
+    Helper function để trích xuất JSON object từ text
+    
+    Args:
+        text: Text chứa JSON
+        
+    Returns:
+        str: JSON text được extract hoặc None
+    """
+    if not text:
+        return None
+    
+    # Tìm vị trí { đầu tiên
     start_idx = text.find('{')
     if start_idx == -1:
         return None
@@ -1338,32 +1406,45 @@ def repair_json_text(json_text):
 def convert_json_to_text_format(json_obj, delimiter="|"):
     """
     Chuyển JSON object thành text format cũ để tương thích
+    Hoặc trả về JSON string nếu schema phức tạp
     
     Args:
         json_obj: JSON object đã parse
         delimiter: Delimiter để nối các field
         
     Returns:
-        str: Text format theo pattern cũ
+        str: Text format theo pattern cũ hoặc JSON string
     """
     if not isinstance(json_obj, dict):
         return str(json_obj)
     
     try:
-        # Theo format: Category|Sản phẩm|Service|Tag|Note 1
-        fields = [
-            json_obj.get('category') or 'null',
-            json_obj.get('product') or 'null', 
-            json_obj.get('service') or 'null',
-            json_obj.get('tag') or 'null',
-            json_obj.get('note_1') or 'null'
-        ]
+        # Kiểm tra nếu là schema cũ (category, product, service, tag, note_1)
+        old_schema_fields = ['category', 'product', 'service', 'tag', 'note_1']
+        if all(field in json_obj for field in old_schema_fields):
+            # Theo format: Category|Sản phẩm|Service|Tag|Note 1
+            fields = [
+                json_obj.get('category') or 'null',
+                json_obj.get('product') or 'null', 
+                json_obj.get('service') or 'null',
+                json_obj.get('tag') or 'null',
+                json_obj.get('note_1') or 'null'
+            ]
+            return delimiter.join(fields)
         
-        return delimiter.join(fields)
+        # Nếu là schema phức tạp (như Masterise Group), trả về JSON string
+        else:
+            import json
+            return json.dumps(json_obj, ensure_ascii=False, indent=2)
         
     except Exception as e:
         logger.debug(f"❌ JSON to text conversion error: {str(e)}")
-        return str(json_obj)
+        # Fallback: trả về JSON string
+        try:
+            import json
+            return json.dumps(json_obj, ensure_ascii=False)
+        except:
+            return str(json_obj)
 
 def parse_response_with_fallback(response_text, use_json=False, schema=None):
     """
@@ -1389,11 +1470,52 @@ def parse_response_with_fallback(response_text, use_json=False, schema=None):
             return convert_json_to_text_format(json_obj)
         elif JSON_PARSE_FALLBACK_TO_TEXT:
             logger.debug("🔄 JSON parse thất bại, fallback về text parsing")
+            # Cải thiện: Thử extract text có ý nghĩa từ response
+            cleaned_text = _extract_meaningful_text(response_text)
+            if cleaned_text and cleaned_text != "```json":
+                return cleaned_text
+            else:
+                # Nếu vẫn không có text có ý nghĩa, trả về thông báo lỗi rõ ràng
+                return f"JSON parse failed - Response: {response_text[:100]}..."
         else:
             return f"JSON parse failed: {response_text[:200]}..."
     
     # Fallback về text parsing cũ hoặc trả về raw text
     return response_text.strip()
+
+def _extract_meaningful_text(response_text):
+    """
+    Trích xuất text có ý nghĩa từ response, loại bỏ markdown và formatting
+    
+    Args:
+        response_text: Response text từ AI
+        
+    Returns:
+        str: Text có ý nghĩa hoặc None
+    """
+    if not response_text:
+        return None
+    
+    text = response_text.strip()
+    
+    # Loại bỏ markdown code blocks
+    text = re.sub(r'```json\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'```\s*', '', text)
+    text = re.sub(r'`\s*', '', text)
+    
+    # Loại bỏ các pattern không có ý nghĩa
+    text = re.sub(r'^\s*```json\s*$', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^\s*```\s*$', '', text)
+    
+    # Loại bỏ các dòng trống và whitespace thừa
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    text = '\n'.join(lines)
+    
+    # Nếu text quá ngắn hoặc chỉ chứa formatting, return None
+    if len(text) < 5 or text.lower() in ['json', '```', '```json']:
+        return None
+    
+    return text
 
 # Test utility
 def test_json_parsing():
